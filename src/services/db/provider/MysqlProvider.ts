@@ -22,6 +22,35 @@ export class MysqlProvider implements IDatabaseProvider {
   }
 
   async run(sql: string, params: any[] = []): Promise<{ changes: number; lastInsertRowid: number }> {
+    // Handle transaction control commands separately (not supported in prepared statements)
+    if (/^\s*(BEGIN|START TRANSACTION|COMMIT|ROLLBACK)\s*$/i.test(sql.trim())) {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.query(sql);
+        return { changes: 0, lastInsertRowid: 0 };
+      } finally {
+        connection.release();
+      }
+    }
+
+    // Split multi-statement SQL (MySQL doesn't support multiple statements in execute())
+    const statements = sql.split(';').map(s => s.trim()).filter(s => s.length > 0);
+
+    if (statements.length > 1) {
+      // Execute each statement separately
+      let totalChanges = 0;
+      let lastId = 0;
+
+      for (const stmt of statements) {
+        const [result] = await this.pool.execute<mysql.ResultSetHeader>(stmt, params);
+        totalChanges += result.affectedRows || 0;
+        if (result.insertId) lastId = result.insertId;
+      }
+
+      return { changes: totalChanges, lastInsertRowid: lastId };
+    }
+
+    // Single statement - use prepared statement
     const [result] = await this.pool.execute<mysql.ResultSetHeader>(sql, params);
     return {
       changes: result.affectedRows,
