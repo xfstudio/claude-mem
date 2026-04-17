@@ -43,6 +43,14 @@ export interface ClaudeMemEnv {
   ANTHROPIC_BASE_URL?: string;
   GEMINI_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
+  
+  // Database configuration
+  CLAUDE_MEM_DATABASE_ENGIN?: string;
+  MYSQL_HOST?: string;
+  MYSQL_PORT?: string;
+  MYSQL_USER?: string;
+  MYSQL_PASSWORD?: string;
+  MYSQL_DATABASE?: string;
 }
 
 /**
@@ -119,6 +127,14 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
     if (parsed.ANTHROPIC_BASE_URL) result.ANTHROPIC_BASE_URL = parsed.ANTHROPIC_BASE_URL;
     if (parsed.GEMINI_API_KEY) result.GEMINI_API_KEY = parsed.GEMINI_API_KEY;
     if (parsed.OPENROUTER_API_KEY) result.OPENROUTER_API_KEY = parsed.OPENROUTER_API_KEY;
+    
+    // Database configuration
+    if (parsed.CLAUDE_MEM_DATABASE_ENGIN) result.CLAUDE_MEM_DATABASE_ENGIN = parsed.CLAUDE_MEM_DATABASE_ENGIN;
+    if (parsed.MYSQL_HOST) result.MYSQL_HOST = parsed.MYSQL_HOST;
+    if (parsed.MYSQL_PORT) result.MYSQL_PORT = parsed.MYSQL_PORT;
+    if (parsed.MYSQL_USER) result.MYSQL_USER = parsed.MYSQL_USER;
+    if (parsed.MYSQL_PASSWORD) result.MYSQL_PASSWORD = parsed.MYSQL_PASSWORD;
+    if (parsed.MYSQL_DATABASE) result.MYSQL_DATABASE = parsed.MYSQL_DATABASE;
 
     return result;
   } catch (error) {
@@ -176,6 +192,32 @@ export function saveClaudeMemEnv(env: ClaudeMemEnv): void {
       } else {
         delete updated.OPENROUTER_API_KEY;
       }
+    }
+
+    // Database configuration
+    if (env.CLAUDE_MEM_DATABASE_ENGIN !== undefined) {
+      if (env.CLAUDE_MEM_DATABASE_ENGIN) updated.CLAUDE_MEM_DATABASE_ENGIN = env.CLAUDE_MEM_DATABASE_ENGIN;
+      else delete updated.CLAUDE_MEM_DATABASE_ENGIN;
+    }
+    if (env.MYSQL_HOST !== undefined) {
+      if (env.MYSQL_HOST) updated.MYSQL_HOST = env.MYSQL_HOST;
+      else delete updated.MYSQL_HOST;
+    }
+    if (env.MYSQL_PORT !== undefined) {
+      if (env.MYSQL_PORT) updated.MYSQL_PORT = env.MYSQL_PORT;
+      else delete updated.MYSQL_PORT;
+    }
+    if (env.MYSQL_USER !== undefined) {
+      if (env.MYSQL_USER) updated.MYSQL_USER = env.MYSQL_USER;
+      else delete updated.MYSQL_USER;
+    }
+    if (env.MYSQL_PASSWORD !== undefined) {
+      if (env.MYSQL_PASSWORD) updated.MYSQL_PASSWORD = env.MYSQL_PASSWORD;
+      else delete updated.MYSQL_PASSWORD;
+    }
+    if (env.MYSQL_DATABASE !== undefined) {
+      if (env.MYSQL_DATABASE) updated.MYSQL_DATABASE = env.MYSQL_DATABASE;
+      else delete updated.MYSQL_DATABASE;
     }
 
     writeFileSync(ENV_FILE_PATH, serializeEnvFile(updated), { encoding: 'utf-8', mode: 0o600 });

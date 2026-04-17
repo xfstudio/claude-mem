@@ -7,7 +7,8 @@
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { SessionStore } from '../services/sqlite/SessionStore.js';
+import { SessionStore } from '../services/db/SessionStore.js';
+import { getDatabaseProvider } from '../services/db/DatabaseFactory.js';
 import { logger } from '../utils/logger.js';
 
 interface ObservationData {
@@ -203,14 +204,15 @@ function extractTimestamp(commentLine: string): string | null {
 /**
  * Main import function
  */
-function main() {
+async function main() {
   console.log('Starting XML observation import...\n');
 
   // Build timestamp map
   const timestampMap = buildTimestampMap();
 
   // Open database connection
-  const db = new SessionStore();
+  const provider = await getDatabaseProvider();
+  const db = new SessionStore(provider);
 
   // Create SDK sessions for all unique Claude Code sessions
   console.log('\nCreating SDK sessions for imported data...');
@@ -221,32 +223,31 @@ function main() {
       const syntheticSdkSessionId = `imported-${sessionMeta.sessionId}`;
 
       // Try to find existing session first
-      const existingQuery = db['db'].prepare(`
+      const existing = await db['db'].get<{ memory_session_id: string | null }>(`
         SELECT memory_session_id
         FROM sdk_sessions
         WHERE content_session_id = ?
-      `);
-      const existing = existingQuery.get(sessionMeta.sessionId) as { memory_session_id: string | null } | undefined;
+      `, [sessionMeta.sessionId]);
 
       if (existing && existing.memory_session_id) {
         // Use existing SDK session ID
         claudeSessionToSdkSession.set(sessionMeta.sessionId, existing.memory_session_id);
       } else if (existing && !existing.memory_session_id) {
         // Session exists but memory_session_id is NULL, update it
-        db['db'].prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?')
-          .run(syntheticSdkSessionId, sessionMeta.sessionId);
+        await db['db'].run('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?',
+          [syntheticSdkSessionId, sessionMeta.sessionId]);
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
       } else {
         // Create new SDK session
-        db.createSDKSession(
+        await db.createSDKSession(
           sessionMeta.sessionId,
           sessionMeta.project,
           'Imported from transcript XML'
         );
 
         // Update with synthetic SDK session ID
-        db['db'].prepare('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?')
-          .run(syntheticSdkSessionId, sessionMeta.sessionId);
+        await db['db'].run('UPDATE sdk_sessions SET memory_session_id = ? WHERE content_session_id = ?',
+          [syntheticSdkSessionId, sessionMeta.sessionId]);
 
         claudeSessionToSdkSession.set(sessionMeta.sessionId, syntheticSdkSessionId);
       }
@@ -305,10 +306,10 @@ function main() {
     const observation = parseObservation(block);
     if (observation) {
       // Check for duplicate
-      const existingObs = db['db'].prepare(`
+      const existingObs = await db['db'].get<{ id: number }>(`
         SELECT id FROM observations
         WHERE memory_session_id = ? AND title = ? AND subtitle = ? AND type = ?
-      `).get(memorySessionId, observation.title, observation.subtitle, observation.type);
+      `, [memorySessionId, observation.title, observation.subtitle, observation.type]);
 
       if (existingObs) {
         duplicateObs++;
@@ -316,7 +317,7 @@ function main() {
       }
 
       try {
-        db.storeObservation(
+        await db.storeObservation(
           memorySessionId,
           sessionMeta.project,
           observation
@@ -337,10 +338,10 @@ function main() {
     const summary = parseSummary(block);
     if (summary) {
       // Check for duplicate
-      const existingSum = db['db'].prepare(`
+      const existingSum = await db['db'].get<{ id: number }>(`
         SELECT id FROM session_summaries
         WHERE memory_session_id = ? AND request = ? AND completed = ? AND learned = ?
-      `).get(memorySessionId, summary.request, summary.completed, summary.learned);
+      `, [memorySessionId, summary.request, summary.completed, summary.learned]);
 
       if (existingSum) {
         duplicateSum++;
@@ -348,7 +349,7 @@ function main() {
       }
 
       try {
-        db.storeSummary(
+        await db.storeSummary(
           memorySessionId,
           sessionMeta.project,
           summary
@@ -369,7 +370,7 @@ function main() {
     skipped++;
   }
 
-  db.close();
+  await provider.close();
 
   console.log('\n' + '='.repeat(60));
   console.log('Import Complete!');
@@ -385,5 +386,5 @@ function main() {
 
 // Run if executed directly
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
+  main().catch(console.error);
 }

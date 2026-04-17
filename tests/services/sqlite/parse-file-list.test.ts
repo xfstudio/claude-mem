@@ -5,7 +5,7 @@
  * that may contain legacy bare path strings instead of JSON arrays.
  */
 import { describe, it, expect } from 'bun:test';
-import { parseFileList } from '../../../src/services/sqlite/observations/files.js';
+import { parseFileList } from '../../../src/services/db/observations/files.js';
 
 describe('parseFileList', () => {
   it('returns [] for null', () => {

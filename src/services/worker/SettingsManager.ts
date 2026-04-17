@@ -26,18 +26,17 @@ export class SettingsManager {
   /**
    * Get current viewer settings (with defaults)
    */
-  getSettings(): ViewerSettings {
+  async getSettings(): Promise<ViewerSettings> {
     const db = this.dbManager.getSessionStore().db;
 
     try {
-      const stmt = db.prepare('SELECT key, value FROM viewer_settings');
-      const rows = stmt.all() as Array<{ key: string; value: string }>;
+      const rows = await db.all<{ key: string; value: string }>('SELECT key, value FROM viewer_settings', []);
 
       const settings: ViewerSettings = { ...this.defaultSettings };
       for (const row of rows) {
         const key = row.key as keyof ViewerSettings;
         if (key in settings) {
-          settings[key] = JSON.parse(row.value) as ViewerSettings[typeof key];
+          (settings as any)[key] = JSON.parse(row.value);
         }
       }
 
@@ -51,18 +50,16 @@ export class SettingsManager {
   /**
    * Update viewer settings (partial update)
    */
-  updateSettings(updates: Partial<ViewerSettings>): ViewerSettings {
+  async updateSettings(updates: Partial<ViewerSettings>): Promise<ViewerSettings> {
     const db = this.dbManager.getSessionStore().db;
 
-    const stmt = db.prepare(`
-      INSERT OR REPLACE INTO viewer_settings (key, value)
-      VALUES (?, ?)
-    `);
-
     for (const [key, value] of Object.entries(updates)) {
-      stmt.run(key, JSON.stringify(value));
+      await db.run(`
+        INSERT OR REPLACE INTO viewer_settings (key, value)
+        VALUES (?, ?)
+      `, [key, JSON.stringify(value)]);
     }
 
-    return this.getSettings();
+    return await this.getSettings();
   }
 }

@@ -1,6 +1,5 @@
-import { Database } from 'bun:sqlite';
+import { IDatabaseProvider } from './provider/IDatabaseProvider.js';
 import { TableNameRow } from '../../types/database.js';
-import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { isDirectChild } from '../../shared/path-utils.js';
 import { AppError } from '../server/ErrorHandler.js';
@@ -21,20 +20,13 @@ import {
  * Vector search is handled by ChromaDB - this class only supports filtering without query text
  */
 export class SessionSearch {
-  private db: Database;
+  private db: IDatabaseProvider;
 
   private static readonly MISSING_SEARCH_INPUT_MESSAGE = 'Either query or filters required for search';
 
-  constructor(dbPath?: string) {
-    if (!dbPath) {
-      ensureDir(DATA_DIR);
-      dbPath = DB_PATH;
-    }
-    this.db = new Database(dbPath);
-    this.db.run('PRAGMA journal_mode = WAL');
-
-    // Ensure FTS tables exist
-    this.ensureFTSTables();
+  constructor(db: IDatabaseProvider) {
+    this.db = db;
+    // ensureFTSTables must be awaited by the caller after instantiation if needed
   }
 
   /**
@@ -55,9 +47,9 @@ export class SessionSearch {
    *
    * TODO: Remove FTS5 infrastructure in future major version (v7.0.0)
    */
-  private ensureFTSTables(): void {
+  async ensureFTSTables(): Promise<void> {
     // Check if FTS tables already exist
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
+    const tables = await this.db.all("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'") as TableNameRow[];
     const hasFTS = tables.some(t => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
 
     if (hasFTS) {
@@ -67,7 +59,7 @@ export class SessionSearch {
 
     // Runtime check: verify FTS5 is available before attempting to create tables.
     // bun:sqlite on Windows may not include the FTS5 extension (#791).
-    if (!this.isFts5Available()) {
+    if (!(await this.isFts5Available())) {
       logger.warn('DB', 'FTS5 not available on this platform — skipping FTS table creation (search uses ChromaDB)');
       return;
     }
@@ -76,7 +68,7 @@ export class SessionSearch {
 
     try {
       // Create observations_fts virtual table
-      this.db.run(`
+      await this.db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
           title,
           subtitle,
@@ -90,14 +82,14 @@ export class SessionSearch {
       `);
 
       // Populate with existing data
-      this.db.run(`
+      await this.db.run(`
         INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
         SELECT id, title, subtitle, narrative, text, facts, concepts
         FROM observations;
       `);
 
       // Create triggers for observations
-      this.db.run(`
+      await this.db.run(`
         CREATE TRIGGER IF NOT EXISTS observations_ai AFTER INSERT ON observations BEGIN
           INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
           VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
@@ -117,7 +109,7 @@ export class SessionSearch {
       `);
 
       // Create session_summaries_fts virtual table
-      this.db.run(`
+      await this.db.run(`
         CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
           request,
           investigated,
@@ -131,14 +123,14 @@ export class SessionSearch {
       `);
 
       // Populate with existing data
-      this.db.run(`
+      await this.db.run(`
         INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
         SELECT id, request, investigated, learned, completed, next_steps, notes
         FROM session_summaries;
       `);
 
       // Create triggers for session_summaries
-      this.db.run(`
+      await this.db.run(`
         CREATE TRIGGER IF NOT EXISTS session_summaries_ai AFTER INSERT ON session_summaries BEGIN
           INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
           VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
@@ -168,10 +160,10 @@ export class SessionSearch {
    * Probe whether the FTS5 extension is available in the current SQLite build.
    * Creates and immediately drops a temporary FTS5 table.
    */
-  private isFts5Available(): boolean {
+  private async isFts5Available(): Promise<boolean> {
     try {
-      this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
-      this.db.run('DROP TABLE _fts5_probe');
+      await this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
+      await this.db.run('DROP TABLE _fts5_probe');
       return true;
     } catch {
       return false;
@@ -274,7 +266,7 @@ export class SessionSearch {
    * Search observations using filter-only direct SQLite query.
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchObservations(query: string | undefined, options: SearchOptions = {}): ObservationSearchResult[] {
+  async searchObservations(query: string | undefined, options: SearchOptions = {}): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
@@ -297,7 +289,7 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+      return await this.db.all(sql, [...params]) as ObservationSearchResult[];
     }
 
     // Vector search with query text should be handled by ChromaDB
@@ -310,7 +302,7 @@ export class SessionSearch {
    * Search session summaries using filter-only direct SQLite query.
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
+  async searchSessions(query: string | undefined, options: SearchOptions = {}): Promise<SessionSummarySearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'relevance', ...filters } = options;
 
@@ -336,7 +328,7 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as SessionSummarySearchResult[];
+      return await this.db.all(sql, [...params]) as SessionSummarySearchResult[];
     }
 
     // Vector search with query text should be handled by ChromaDB
@@ -348,7 +340,7 @@ export class SessionSearch {
   /**
    * Find observations by concept tag
    */
-  findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
+  async findByConcept(concept: string, options: SearchOptions = {}): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
@@ -367,7 +359,7 @@ export class SessionSearch {
 
     params.push(limit, offset);
 
-    return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    return await this.db.all(sql, [...params]) as ObservationSearchResult[];
   }
 
   /**
@@ -410,10 +402,10 @@ export class SessionSearch {
    * Find observations and summaries by file path
    * When isFolder=true, only returns results with files directly in the folder (not subfolders)
    */
-  findByFile(filePath: string, options: SearchOptions = {}): {
-    observations: ObservationSearchResult[];
-    sessions: SessionSummarySearchResult[];
-  } {
+  async findByFile(filePath: string, options: SearchOptions = {}): Promise<{
+              observations: ObservationSearchResult[];
+              sessions: SessionSummarySearchResult[];
+            }> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', isFolder = false, ...filters } = options;
 
@@ -435,7 +427,7 @@ export class SessionSearch {
 
     params.push(queryLimit, offset);
 
-    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
+    let observations = await this.db.all(observationsSql, [...params]) as ObservationSearchResult[];
 
     // Post-filter to direct children if isFolder mode
     if (isFolder) {
@@ -484,7 +476,7 @@ export class SessionSearch {
 
     sessionParams.push(queryLimit, offset);
 
-    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
+    let sessions = await this.db.all(sessionsSql, [...sessionParams]) as SessionSummarySearchResult[];
 
     // Post-filter to direct children if isFolder mode
     if (isFolder) {
@@ -497,10 +489,10 @@ export class SessionSearch {
   /**
    * Find observations by type
    */
-  findByType(
+  async findByType(
     type: ObservationRow['type'] | ObservationRow['type'][],
     options: SearchOptions = {}
-  ): ObservationSearchResult[] {
+  ): Promise<ObservationSearchResult[]> {
     const params: any[] = [];
     const { limit = 50, offset = 0, orderBy = 'date_desc', ...filters } = options;
 
@@ -519,14 +511,14 @@ export class SessionSearch {
 
     params.push(limit, offset);
 
-    return this.db.prepare(sql).all(...params) as ObservationSearchResult[];
+    return await this.db.all(sql, [...params]) as ObservationSearchResult[];
   }
 
   /**
    * Search user prompts using filter-only direct SQLite query.
    * Vector search is handled by ChromaDB - this only supports filtering without query text.
    */
-  searchUserPrompts(query: string | undefined, options: SearchOptions = {}): UserPromptSearchResult[] {
+  async searchUserPrompts(query: string | undefined, options: SearchOptions = {}): Promise<UserPromptSearchResult[]> {
     const params: any[] = [];
     const { limit = 20, offset = 0, orderBy = 'relevance', ...filters } = options;
 
@@ -572,7 +564,7 @@ export class SessionSearch {
       `;
 
       params.push(limit, offset);
-      return this.db.prepare(sql).all(...params) as UserPromptSearchResult[];
+      return await this.db.all(sql, [...params]) as UserPromptSearchResult[];
     }
 
     // Vector search with query text should be handled by ChromaDB
@@ -584,8 +576,8 @@ export class SessionSearch {
   /**
    * Get all prompts for a session by content_session_id
    */
-  getUserPromptsBySession(contentSessionId: string): UserPromptRow[] {
-    const stmt = this.db.prepare(`
+  async getUserPromptsBySession(contentSessionId: string): Promise<UserPromptRow[]> {
+    const sql = `
       SELECT
         id,
         content_session_id,
@@ -596,15 +588,15 @@ export class SessionSearch {
       FROM user_prompts
       WHERE content_session_id = ?
       ORDER BY prompt_number ASC
-    `);
+    `;
 
-    return stmt.all(contentSessionId) as UserPromptRow[];
+    return await this.db.all<UserPromptRow>(sql, [contentSessionId]);
   }
 
   /**
    * Close the database connection
    */
-  close(): void {
-    this.db.close();
+  async close(): Promise<void> {
+    await this.db.close();
   }
 }

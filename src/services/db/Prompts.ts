@@ -2,7 +2,7 @@
  * User prompts module - named re-exports
  *
  * Provides all user prompt database operations as standalone functions.
- * Each function takes `db: Database` as first parameter.
+ * Each function takes `db: IDatabaseProvider` as first parameter.
  */
 import { logger } from '../../utils/logger.js';
 

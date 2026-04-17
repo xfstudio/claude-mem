@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { PendingMessageStore, PersistentPendingMessage } from '../sqlite/PendingMessageStore.js';
+import { PendingMessageStore, PersistentPendingMessage } from '../db/PendingMessageStore.js';
 import type { PendingMessageWithId } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
@@ -37,7 +37,7 @@ export class SessionQueueProcessor {
       try {
         // Atomically claim next pending message (marks as 'processing')
         // Self-heals any stale processing messages before claiming
-        const persistentMessage = this.store.claimNextMessage(sessionDbId);
+        const persistentMessage = await this.store.claimNextMessage(sessionDbId);
 
         if (persistentMessage) {
           // Reset activity time when we successfully yield a message

@@ -1,9 +1,9 @@
+import { IDatabaseProvider } from '../provider/IDatabaseProvider.js';
 /**
  * Observation retrieval functions
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types.js';
@@ -11,24 +11,24 @@ import type { GetObservationsByIdsOptions, ObservationSessionRow } from './types
 /**
  * Get a single observation by ID
  */
-export function getObservationById(db: Database, id: number): ObservationRecord | null {
-  const stmt = db.prepare(`
+export async function getObservationById(db: IDatabaseProvider, id: number): Promise<ObservationRecord | null >{
+  
+
+  return await db.get(`
     SELECT *
     FROM observations
     WHERE id = ?
-  `);
-
-  return stmt.get(id) as ObservationRecord | undefined || null;
+  `, [id]) as ObservationRecord | undefined || null;
 }
 
 /**
  * Get observations by array of IDs with ordering and limit
  */
-export function getObservationsByIds(
-  db: Database,
+export async function getObservationsByIds(
+  db: IDatabaseProvider,
   ids: number[],
   options: GetObservationsByIdsOptions = {}
-): ObservationRecord[] {
+): Promise<ObservationRecord[] >{
   if (ids.length === 0) return [];
 
   const { orderBy = 'date_desc', limit, project, type, concepts, files } = options;
@@ -84,43 +84,43 @@ export function getObservationsByIds(
     ? `WHERE id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
     : `WHERE id IN (${placeholders})`;
 
-  const stmt = db.prepare(`
+  
+
+  return await db.all(`
     SELECT *
     FROM observations
     ${whereClause}
     ORDER BY created_at_epoch ${orderClause}
     ${limitClause}
-  `);
-
-  return stmt.all(...params) as ObservationRecord[];
+  `, [...params]) as ObservationRecord[];
 }
 
 /**
  * Get observations for a specific session
  */
-export function getObservationsForSession(
-  db: Database,
+export async function getObservationsForSession(
+  db: IDatabaseProvider,
   memorySessionId: string
-): ObservationSessionRow[] {
-  const stmt = db.prepare(`
+): Promise<ObservationSessionRow[] >{
+  
+
+  return await db.all(`
     SELECT title, subtitle, type, prompt_number
     FROM observations
     WHERE memory_session_id = ?
     ORDER BY created_at_epoch ASC
-  `);
-
-  return stmt.all(memorySessionId) as ObservationSessionRow[];
+  `, [memorySessionId]) as ObservationSessionRow[];
 }
 
 /**
  * Get observations associated with a given file path, scoped to specific projects.
  * Matches on the full file path (not just basename) to avoid cross-project collisions.
  */
-export function getObservationsByFilePath(
-  db: Database,
+export async function getObservationsByFilePath(
+  db: IDatabaseProvider,
   filePath: string,
   options?: { projects?: string[]; limit?: number }
-): ObservationRecord[] {
+): Promise<ObservationRecord[] >{
   const rawLimit = options?.limit;
   const limit = Number.isInteger(rawLimit) && (rawLimit as number) > 0
     ? Math.min(rawLimit as number, 100)
@@ -136,7 +136,9 @@ export function getObservationsByFilePath(
 
   params.push(limit);
 
-  const stmt = db.prepare(`
+  
+
+  return await db.all(`
     SELECT *
     FROM observations
     WHERE (
@@ -146,7 +148,5 @@ export function getObservationsByFilePath(
     ${projectClause}
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(...params) as ObservationRecord[];
+  `, [...params]) as ObservationRecord[];
 }

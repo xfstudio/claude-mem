@@ -12,8 +12,8 @@
  */
 import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { ClaudeMemDatabase } from '../../../src/services/sqlite/Database.js';
-import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
+import { ClaudeMemDatabase } from '../../../src/services/db/Database.js';
+import { MigrationRunner } from '../../../src/services/db/migrations/runner.js';
 import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';

@@ -15,10 +15,10 @@ export enum LogLevel {
   SILENT = 4
 }
 
-export type Component = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'CHROMA_MCP' | 'CHROMA_SYNC' | 'FOLDER_INDEX' | 'CLAUDE_MD' | 'QUEUE';
+export type Component = 'SEARCH' | 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'CHROMA_MCP' | 'CHROMA_SYNC' | 'FOLDER_INDEX' | 'CLAUDE_MD' | 'QUEUE' | 'IMPORT' | 'CONSOLE' | 'DEDUP' | 'SHUTDOWN' | 'CURSOR' | 'OPENCLAW' | 'OPENCODE' | 'WINDSURF' | 'TRANSCRIPT' | 'BRANCH' | 'SECURITY' | 'SETTINGS' | 'PROCESS' | 'SDK_SPAWN' | 'ENV' | 'PROJECT_NAME' | 'AGENTS_MD' | 'CONFIG';
 
 interface LogContext {
-  sessionId?: number;
+  sessionId?: string | number;
   memorySessionId?: string;
   correlationId?: string;
   [key: string]: any;
@@ -95,14 +95,14 @@ class Logger {
   /**
    * Create correlation ID for tracking an observation through the pipeline
    */
-  correlationId(sessionId: number, observationNum: number): string {
+  correlationId(sessionId: string | number, observationNum: number): string {
     return `obs-${sessionId}-${observationNum}`;
   }
 
   /**
    * Create session correlation ID
    */
-  sessionId(sessionId: number): string {
+  sessionId(sessionId: string | number): string {
     return `session-${sessionId}`;
   }
 

@@ -6,7 +6,7 @@
  * data consistency across domain boundaries.
  */
 
-import { Database } from 'bun:sqlite';
+import { IDatabaseProvider } from './provider/IDatabaseProvider.js';
 import { logger } from '../../utils/logger.js';
 import type { ObservationInput } from './observations/types.js';
 import type { SummaryInput } from './summaries/types.js';
@@ -45,8 +45,8 @@ export type StoreAndMarkCompleteResult = StoreObservationsResult;
  * @param overrideTimestampEpoch - Optional override timestamp
  * @returns Object with observation IDs, optional summary ID, and timestamp
  */
-export function storeObservationsAndMarkComplete(
-  db: Database,
+export async function storeObservationsAndMarkComplete(
+  db: IDatabaseProvider,
   memorySessionId: string,
   project: string,
   observations: ObservationInput[],
@@ -55,32 +55,30 @@ export function storeObservationsAndMarkComplete(
   promptNumber?: number,
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
-): StoreAndMarkCompleteResult {
+): Promise<StoreAndMarkCompleteResult> {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
   // Create transaction that wraps all operations
-  const storeAndMarkTx = db.transaction(() => {
+  return await db.transaction(async (tx) => {
     const observationIds: number[] = [];
 
     // 1. Store all observations (with content-hash deduplication)
-    const obsStmt = db.prepare(`
-      INSERT INTO observations
-      (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
-       files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = await findDuplicateObservation(db, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
         continue;
       }
 
-      const result = obsStmt.run(
+      const result = await tx.run(`
+        INSERT INTO observations
+        (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
+         files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
         memorySessionId,
         project,
         observation.type,
@@ -96,21 +94,21 @@ export function storeObservationsAndMarkComplete(
         contentHash,
         timestampIso,
         timestampEpoch
-      );
+      ]);
       observationIds.push(Number(result.lastInsertRowid));
     }
 
     // 2. Store summary if provided
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
+      const summarySql = `
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
          next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      `;
 
-      const result = summaryStmt.run(
+      const result = await tx.run(summarySql, [
         memorySessionId,
         project,
         summary.request,
@@ -123,14 +121,14 @@ export function storeObservationsAndMarkComplete(
         discoveryTokens,
         timestampIso,
         timestampEpoch
-      );
+      ]);
       summaryId = Number(result.lastInsertRowid);
     }
 
     // 3. Mark pending message as processed
     // This UPDATE is part of the same transaction, so if it fails,
     // observations and summary will be rolled back
-    const updateStmt = db.prepare(`
+    const updateSql = `
       UPDATE pending_messages
       SET
         status = 'processed',
@@ -138,14 +136,11 @@ export function storeObservationsAndMarkComplete(
         tool_input = NULL,
         tool_response = NULL
       WHERE id = ? AND status = 'processing'
-    `);
-    updateStmt.run(timestampEpoch, messageId);
+    `;
+    await tx.run(updateSql, [timestampEpoch, messageId]);
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });
-
-  // Execute the transaction and return results
-  return storeAndMarkTx();
 }
 
 /**
@@ -165,8 +160,8 @@ export function storeObservationsAndMarkComplete(
  * @param overrideTimestampEpoch - Optional override timestamp
  * @returns Object with observation IDs, optional summary ID, and timestamp
  */
-export function storeObservations(
-  db: Database,
+export async function storeObservations(
+  db: IDatabaseProvider,
   memorySessionId: string,
   project: string,
   observations: ObservationInput[],
@@ -174,32 +169,32 @@ export function storeObservations(
   promptNumber?: number,
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
-): StoreObservationsResult {
+): Promise<StoreObservationsResult> {
   // Use override timestamp if provided
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
   // Create transaction that wraps all operations
-  const storeTx = db.transaction(() => {
+  return await db.transaction(async (tx) => {
     const observationIds: number[] = [];
 
     // 1. Store all observations (with content-hash deduplication)
-    const obsStmt = db.prepare(`
+    const obsSql = `
       INSERT INTO observations
       (memory_session_id, project, type, title, subtitle, facts, narrative, concepts,
        files_read, files_modified, prompt_number, discovery_tokens, content_hash, created_at, created_at_epoch)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    `;
 
     for (const observation of observations) {
       const contentHash = computeObservationContentHash(memorySessionId, observation.title, observation.narrative);
-      const existing = findDuplicateObservation(db, contentHash, timestampEpoch);
+      const existing = await findDuplicateObservation(tx, contentHash, timestampEpoch);
       if (existing) {
         observationIds.push(existing.id);
         continue;
       }
 
-      const result = obsStmt.run(
+      const result = await tx.run(obsSql, [
         memorySessionId,
         project,
         observation.type,
@@ -215,21 +210,21 @@ export function storeObservations(
         contentHash,
         timestampIso,
         timestampEpoch
-      );
+      ]);
       observationIds.push(Number(result.lastInsertRowid));
     }
 
     // 2. Store summary if provided
     let summaryId: number | null = null;
     if (summary) {
-      const summaryStmt = db.prepare(`
+      const summarySql = `
         INSERT INTO session_summaries
         (memory_session_id, project, request, investigated, learned, completed,
          next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
+      `;
 
-      const result = summaryStmt.run(
+      const result = await tx.run(summarySql, [
         memorySessionId,
         project,
         summary.request,
@@ -242,13 +237,10 @@ export function storeObservations(
         discoveryTokens,
         timestampIso,
         timestampEpoch
-      );
+      ]);
       summaryId = Number(result.lastInsertRowid);
     }
 
     return { observationIds, summaryId, createdAtEpoch: timestampEpoch };
   });
-
-  // Execute the transaction and return results
-  return storeTx();
 }

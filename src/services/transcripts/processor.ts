@@ -12,6 +12,7 @@ import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 
 interface SessionState {
+  [key: string]: unknown;
   sessionId: string;
   platformSource: string;
   cwd?: string;

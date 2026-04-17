@@ -12,7 +12,7 @@ import { EventEmitter } from 'events';
 import { DatabaseManager } from './DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, PendingMessage, PendingMessageWithId, ObservationData } from '../worker-types.js';
-import { PendingMessageStore } from '../sqlite/PendingMessageStore.js';
+import { PendingMessageStore } from '../db/PendingMessageStore.js';
 import { SessionQueueProcessor } from '../queue/SessionQueueProcessor.js';
 import { getProcessBySession, ensureProcessExit } from './ProcessRegistry.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -107,7 +107,7 @@ export class SessionManager {
   /**
    * Initialize a new session or return existing one
    */
-  initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): ActiveSession {
+  async initializeSession(sessionDbId: number, currentUserPrompt?: string, promptNumber?: number): Promise<ActiveSession> {
     logger.debug('SESSION', 'initializeSession called', {
       sessionDbId,
       promptNumber,
@@ -126,7 +126,7 @@ export class SessionManager {
       // Refresh project from database in case it was updated by new-hook
       // This fixes the bug where sessions created with empty project get updated
       // in the database but the in-memory session still has the stale empty value
-      const dbSession = this.dbManager.getSessionById(sessionDbId);
+      const dbSession = await this.dbManager.getSessionById(sessionDbId);
       if (dbSession.project && dbSession.project !== session.project) {
         logger.debug('SESSION', 'Updating project from database', {
           sessionDbId,
@@ -160,7 +160,7 @@ export class SessionManager {
     }
 
     // Fetch from database
-    const dbSession = this.dbManager.getSessionById(sessionDbId);
+    const dbSession = await this.dbManager.getSessionById(sessionDbId);
 
     logger.debug('SESSION', 'Fetched session from database', {
       sessionDbId,
@@ -210,7 +210,7 @@ export class SessionManager {
       pendingMessages: [],
       abortController: new AbortController(),
       generatorPromise: null,
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id),
+      lastPromptNumber: promptNumber || await this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id),
       startTime: Date.now(),
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
@@ -227,7 +227,7 @@ export class SessionManager {
       contentSessionId: dbSession.content_session_id,
       dbMemorySessionId: dbSession.memory_session_id || '(none in DB)',
       memorySessionId: '(cleared - will capture fresh from SDK)',
-      lastPromptNumber: promptNumber || this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
+      lastPromptNumber: promptNumber || await this.dbManager.getSessionStore().getPromptNumberFromUserPrompts(dbSession.content_session_id)
     });
 
     this.sessions.set(sessionDbId, session);
@@ -261,11 +261,11 @@ export class SessionManager {
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures observations survive worker crashes.
    */
-  queueObservation(sessionDbId: number, data: ObservationData): void {
+  async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
-      session = this.initializeSession(sessionDbId);
+      session = await this.initializeSession(sessionDbId);
     }
 
     // CRITICAL: Persist to database FIRST
@@ -305,11 +305,11 @@ export class SessionManager {
    * CRITICAL: Persists to database FIRST before adding to in-memory queue.
    * This ensures summarize requests survive worker crashes.
    */
-  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
+  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
-      session = this.initializeSession(sessionDbId);
+      session = await this.initializeSession(sessionDbId);
     }
 
     // CRITICAL: Persist to database FIRST
@@ -462,7 +462,7 @@ export class SessionManager {
       }
 
       // Skip sessions with pending work
-      const pendingCount = this.getPendingStore().getPendingCount(sessionDbId);
+      const pendingCount = await this.getPendingStore().getPendingCount(sessionDbId);
       if (pendingCount > 0) continue;
 
       // No generator + no pending work + old enough = stale
@@ -492,8 +492,8 @@ export class SessionManager {
    * Check if any active session has pending messages (for spinner tracking).
    * Scoped to in-memory sessions only.
    */
-  hasPendingMessages(): boolean {
-    return this.getTotalQueueDepth() > 0;
+  async hasPendingMessages(): Promise<boolean> {
+    return (await this.getTotalQueueDepth()) > 0;
   }
 
   /**
@@ -506,11 +506,11 @@ export class SessionManager {
   /**
    * Get total queue depth across all sessions (for activity indicator)
    */
-  getTotalQueueDepth(): number {
+  async getTotalQueueDepth(): Promise<number> {
     let total = 0;
     // We can iterate over active sessions to get their pending count
     for (const session of this.sessions.values()) {
-      total += this.getPendingStore().getPendingCount(session.sessionDbId);
+      total += await this.getPendingStore().getPendingCount(session.sessionDbId);
     }
     return total;
   }
@@ -519,9 +519,9 @@ export class SessionManager {
    * Get total active work (queued + currently processing)
    * Counts both pending messages and items actively being processed by SDK agents
    */
-  getTotalActiveWork(): number {
+  async getTotalActiveWork(): Promise<number> {
     // getPendingCount includes 'processing' status, so this IS the total active work
-    return this.getTotalQueueDepth();
+    return await this.getTotalQueueDepth();
   }
 
   /**
@@ -529,8 +529,8 @@ export class SessionManager {
    * Scoped to in-memory sessions only — orphaned DB messages from dead
    * sessions must not keep the spinner spinning forever.
    */
-  isAnySessionProcessing(): boolean {
-    return this.getTotalQueueDepth() > 0;
+  async isAnySessionProcessing(): Promise<boolean> {
+    return (await this.getTotalQueueDepth()) > 0;
   }
 
   /**
@@ -545,7 +545,7 @@ export class SessionManager {
     // Auto-initialize from database if needed (handles worker restarts)
     let session = this.sessions.get(sessionDbId);
     if (!session) {
-      session = this.initializeSession(sessionDbId);
+      session = await this.initializeSession(sessionDbId);
     }
 
     const emitter = this.sessionQueues.get(sessionDbId);

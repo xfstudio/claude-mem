@@ -1,9 +1,9 @@
+import { IDatabaseProvider } from '../provider/IDatabaseProvider.js';
 /**
  * Session file retrieval functions
  * Extracted from SessionStore.ts for modular organization
  */
 
-import { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type { SessionFilesResult } from './types.js';
 
@@ -25,17 +25,17 @@ export function parseFileList(value: string | null | undefined): string[] {
 /**
  * Get aggregated files from all observations for a session
  */
-export function getFilesForSession(
-  db: Database,
+export async function getFilesForSession(
+  db: IDatabaseProvider,
   memorySessionId: string
-): SessionFilesResult {
-  const stmt = db.prepare(`
+): Promise<SessionFilesResult >{
+  
+
+  const rows = await db.all(`
     SELECT files_read, files_modified
     FROM observations
     WHERE memory_session_id = ?
-  `);
-
-  const rows = stmt.all(memorySessionId) as Array<{
+  `, [memorySessionId]) as Array<{
     files_read: string | null;
     files_modified: string | null;
   }>;

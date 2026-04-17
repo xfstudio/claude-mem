@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { MigrationRunner } from '../../../src/services/sqlite/migrations/runner.js';
+import { MigrationRunner } from '../../../src/services/db/migrations/runner.js';
 
 interface TableNameRow {
   name: string;

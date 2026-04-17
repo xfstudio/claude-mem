@@ -1,9 +1,9 @@
+import { IDatabaseProvider } from '../provider/IDatabaseProvider.js';
 /**
  * Session retrieval functions
  * Database-first parameter pattern for functional composition
  */
 
-import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 import type {
   SessionBasic,
@@ -15,31 +15,33 @@ import type {
 /**
  * Get session by ID (basic fields only)
  */
-export function getSessionById(db: Database, id: number): SessionBasic | null {
-  const stmt = db.prepare(`
+export async function getSessionById(db: IDatabaseProvider, id: number): Promise<SessionBasic | null >{
+  
+
+  return (await db.get(`
     SELECT id, content_session_id, memory_session_id, project,
            COALESCE(platform_source, 'claude') as platform_source,
            user_prompt, custom_title
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1
-  `);
-
-  return (stmt.get(id) as SessionBasic | undefined) || null;
+  `, [id]) as SessionBasic | undefined) || null;
 }
 
 /**
  * Get SDK sessions by memory session IDs
  * Used for exporting session metadata
  */
-export function getSdkSessionsBySessionIds(
-  db: Database,
+export async function getSdkSessionsBySessionIds(
+  db: IDatabaseProvider,
   memorySessionIds: string[]
-): SessionFull[] {
+): Promise<SessionFull[] >{
   if (memorySessionIds.length === 0) return [];
 
   const placeholders = memorySessionIds.map(() => '?').join(',');
-  const stmt = db.prepare(`
+  
+
+  return await db.all(`
     SELECT id, content_session_id, memory_session_id, project,
            COALESCE(platform_source, 'claude') as platform_source,
            user_prompt, custom_title,
@@ -47,21 +49,21 @@ export function getSdkSessionsBySessionIds(
     FROM sdk_sessions
     WHERE memory_session_id IN (${placeholders})
     ORDER BY started_at_epoch DESC
-  `);
-
-  return stmt.all(...memorySessionIds) as SessionFull[];
+  `, [...memorySessionIds]) as SessionFull[];
 }
 
 /**
  * Get recent sessions with their status and summary info
  * Returns sessions ordered oldest-first for display
  */
-export function getRecentSessionsWithStatus(
-  db: Database,
+export async function getRecentSessionsWithStatus(
+  db: IDatabaseProvider,
   project: string,
   limit: number = 3
-): SessionWithStatus[] {
-  const stmt = db.prepare(`
+): Promise<SessionWithStatus[] >{
+  
+
+  return await db.all(`
     SELECT * FROM (
       SELECT
         s.memory_session_id,
@@ -78,19 +80,19 @@ export function getRecentSessionsWithStatus(
       LIMIT ?
     )
     ORDER BY started_at_epoch ASC
-  `);
-
-  return stmt.all(project, limit) as SessionWithStatus[];
+  `, [project, limit]) as SessionWithStatus[];
 }
 
 /**
  * Get full session summary by ID (includes request_summary and learned_summary)
  */
-export function getSessionSummaryById(
-  db: Database,
+export async function getSessionSummaryById(
+  db: IDatabaseProvider,
   id: number
-): SessionSummaryDetail | null {
-  const stmt = db.prepare(`
+): Promise<SessionSummaryDetail | null >{
+  
+
+  return (await db.get(`
     SELECT
       id,
       memory_session_id,
@@ -105,7 +107,5 @@ export function getSessionSummaryById(
     FROM sdk_sessions
     WHERE id = ?
     LIMIT 1
-  `);
-
-  return (stmt.get(id) as SessionSummaryDetail | undefined) || null;
+  `, [id]) as SessionSummaryDetail | undefined) || null;
 }

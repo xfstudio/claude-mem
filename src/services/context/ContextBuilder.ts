@@ -8,7 +8,8 @@
 import path from 'path';
 import { homedir } from 'os';
 import { unlinkSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionStore } from '../db/SessionStore.js';
+import { getDatabaseProvider } from '../db/DatabaseFactory.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
@@ -46,9 +47,12 @@ const VERSION_MARKER_PATH = path.join(
 /**
  * Initialize database connection with error handling
  */
-function initializeDatabase(): SessionStore | null {
+async function initializeDatabase(): Promise<SessionStore | null> {
   try {
-    return new SessionStore();
+    const provider = await getDatabaseProvider();
+    const store = new SessionStore(provider);
+    await store.init();
+    return store;
   } catch (error: any) {
     if (error.code === 'ERR_DLOPEN_FAILED') {
       try {
@@ -143,7 +147,7 @@ export async function generateContext(
   }
 
   // Initialize database
-  const db = initializeDatabase();
+  const db = await initializeDatabase();
   if (!db) {
     return '';
   }
@@ -151,11 +155,11 @@ export async function generateContext(
   try {
     // Query data for all projects (supports worktree: parent + worktree combined)
     const observations = projects.length > 1
-      ? queryObservationsMulti(db, projects, config, platformSource)
-      : queryObservations(db, project, config, platformSource);
+      ? await queryObservationsMulti(db, projects, config, platformSource)
+      : await queryObservations(db, project, config, platformSource);
     const summaries = projects.length > 1
-      ? querySummariesMulti(db, projects, config, platformSource)
-      : querySummaries(db, project, config, platformSource);
+      ? await querySummariesMulti(db, projects, config, platformSource)
+      : await querySummaries(db, project, config, platformSource);
 
     // Handle empty state
     if (observations.length === 0 && summaries.length === 0) {
@@ -175,6 +179,6 @@ export async function generateContext(
 
     return output;
   } finally {
-    db.close();
+    await db.close();
   }
 }

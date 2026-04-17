@@ -350,7 +350,7 @@ function runNpmInstallInMarketplace(): void {
   execSync('npm install --production', {
     cwd: marketplaceDir,
     stdio: 'pipe',
-    ...(IS_WINDOWS ? { shell: true as const } : {}),
+    ...(IS_WINDOWS ? { shell: true as any } : {}),
   });
 }
 
@@ -369,7 +369,7 @@ function runSmartInstall(): boolean {
   try {
     execSync(`node "${smartInstallPath}"`, {
       stdio: 'inherit',
-      ...(IS_WINDOWS ? { shell: true as const } : {}),
+      ...(IS_WINDOWS ? { shell: true as any } : {}),
     });
     return true;
   } catch {

@@ -182,7 +182,7 @@ export class SettingsDefaultsManager {
    */
   static getBool(key: keyof SettingsDefaults): boolean {
     const value = this.get(key);
-    return value === 'true' || value === true;
+    return String(value) === 'true';
   }
 
   /**

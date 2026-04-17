@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { EventEmitter } from 'events';
 import { SessionQueueProcessor, CreateIteratorOptions } from '../../../src/services/queue/SessionQueueProcessor.js';
-import type { PendingMessageStore, PersistentPendingMessage } from '../../../src/services/sqlite/PendingMessageStore.js';
+import type { PendingMessageStore, PersistentPendingMessage } from '../../../src/services/db/PendingMessageStore.js';
 
 /**
  * Mock PendingMessageStore that returns null (empty queue) by default.

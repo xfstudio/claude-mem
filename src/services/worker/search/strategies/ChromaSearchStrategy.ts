@@ -21,7 +21,7 @@ import {
   UserPromptSearchResult
 } from '../types.js';
 import { ChromaSync } from '../../../sync/ChromaSync.js';
-import { SessionStore } from '../../../sqlite/SessionStore.js';
+import { SessionStore } from '../../../db/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 
 export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchStrategy {
@@ -104,24 +104,24 @@ export class ChromaSearchStrategy extends BaseSearchStrategy implements SearchSt
 
       // Step 4: Hydrate from SQLite with additional filters
       if (categorized.obsIds.length > 0) {
-        const obsOptions = { type: obsType, concepts, files, orderBy, limit, project };
-        observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
+        const obsOptions = { type: obsType, concepts, files, orderBy: (orderBy === "relevance" ? "date_desc" : orderBy) as any, limit, project: project as any };
+        observations = await this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions) as unknown as ObservationSearchResult[];
       }
 
       if (categorized.sessionIds.length > 0) {
-        sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-          orderBy,
+        sessions = await this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
+          orderBy: orderBy as any,
           limit,
           project
-        });
+        }) as unknown as SessionSummarySearchResult[];
       }
 
       if (categorized.promptIds.length > 0) {
-        prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-          orderBy,
+        prompts = await this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
+          orderBy: orderBy as any,
           limit,
           project
-        });
+        }) as unknown as UserPromptSearchResult[];
       }
 
       logger.debug('SEARCH', 'ChromaSearchStrategy: Hydrated results', {

@@ -6,7 +6,7 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
+import { SessionStore } from '../db/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
@@ -23,18 +23,18 @@ import { SUMMARY_LOOKAHEAD } from './types.js';
 /**
  * Query observations from database with type and concept filtering
  */
-export function queryObservations(
+export async function queryObservations(
   db: SessionStore,
   project: string,
   config: ContextConfig,
   platformSource?: string
-): Observation[] {
+): Promise<Observation[]> {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return await db.db.all<Observation>(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -61,25 +61,25 @@ export function queryObservations(
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
-  `).all(
+  `, [
     project,
     ...typeArray,
     ...conceptArray,
     ...(platformSource ? [platformSource] : []),
     config.totalObservationCount
-  ) as Observation[];
+  ]);
 }
 
 /**
  * Query recent session summaries from database
  */
-export function querySummaries(
+export async function querySummaries(
   db: SessionStore,
   project: string,
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
-  return db.db.prepare(`
+): Promise<SessionSummary[]> {
+  return await db.db.all<SessionSummary>(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -97,9 +97,9 @@ export function querySummaries(
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(
+  `, [
     ...[project, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]
-  ) as SessionSummary[];
+  ]);
 }
 
 /**
@@ -108,12 +108,12 @@ export function querySummaries(
  * Returns observations from all specified projects, interleaved chronologically.
  * Used when running in a worktree to show both parent repo and worktree observations.
  */
-export function queryObservationsMulti(
+export async function queryObservationsMulti(
   db: SessionStore,
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): Observation[] {
+): Promise<Observation[]> {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
@@ -122,7 +122,7 @@ export function queryObservationsMulti(
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return await db.db.all<Observation>(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -150,13 +150,13 @@ export function queryObservationsMulti(
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY o.created_at_epoch DESC
     LIMIT ?
-  `).all(
+  `, [
     ...projects,
     ...typeArray,
     ...conceptArray,
     ...(platformSource ? [platformSource] : []),
     config.totalObservationCount
-  ) as Observation[];
+  ]);
 }
 
 /**
@@ -165,16 +165,16 @@ export function queryObservationsMulti(
  * Returns summaries from all specified projects, interleaved chronologically.
  * Used when running in a worktree to show both parent repo and worktree summaries.
  */
-export function querySummariesMulti(
+export async function querySummariesMulti(
   db: SessionStore,
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
+): Promise<SessionSummary[]> {
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  return await db.db.all<SessionSummary>(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -193,7 +193,7 @@ export function querySummariesMulti(
       ${platformSource ? "AND COALESCE(s.platform_source, 'claude') = ?" : ''}
     ORDER BY ss.created_at_epoch DESC
     LIMIT ?
-  `).all(...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD) as SessionSummary[];
+  `, [...projects, ...(platformSource ? [platformSource] : []), config.sessionCount + SUMMARY_LOOKAHEAD]);
 }
 
 /**

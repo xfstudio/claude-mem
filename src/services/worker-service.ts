@@ -142,7 +142,7 @@ export class WorkerService {
   // Service layer
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
-  private sseBroadcaster: SSEBroadcaster;
+  public sseBroadcaster: SSEBroadcaster;
   private sdkAgent: SDKAgent;
   private geminiAgent: GeminiAgent;
   private openRouterAgent: OpenRouterAgent;
@@ -375,9 +375,9 @@ export class WorkerService {
       await this.dbManager.initialize();
 
       // Reset any messages that were processing when worker died
-      const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+      const { PendingMessageStore } = await import('./db/PendingMessageStore.js');
       const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
-      const resetCount = pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
+      const resetCount = await pendingStore.resetStaleProcessingMessages(0); // 0 = reset ALL processing
       if (resetCount > 0) {
         logger.info('SYSTEM', `Reset ${resetCount} stale processing messages to pending`);
       }
@@ -441,7 +441,7 @@ export class WorkerService {
       const transport = new StdioClientTransport({
         command: 'node',
         args: [mcpServerPath],
-        env: sanitizeEnv(process.env)
+        env: sanitizeEnv(process.env) as Record<string, string>
       });
 
       const MCP_INIT_TIMEOUT_MS = 300000;
@@ -716,7 +716,7 @@ export class WorkerService {
         const pendingStore = this.sessionManager.getPendingMessageStore();
 
         // Check if there's pending work that needs processing with a fresh AbortController
-        const pendingCount = pendingStore.getPendingCount(session.sessionDbId);
+        const pendingCount = await pendingStore.getPendingCount(session.sessionDbId);
 
         // Idle timeout means no new work arrived for 3 minutes - don't restart
         // But check pendingCount first: a message may have arrived between idle
@@ -826,7 +826,7 @@ export class WorkerService {
 
     // No fallback or both failed: mark messages abandoned and remove session so queue doesn't grow
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const abandoned = pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
+    const abandoned = await pendingStore.markAllSessionMessagesAbandoned(sessionDbId);
     if (abandoned > 0) {
       logger.warn('SDK', 'No fallback available; marked pending messages abandoned', {
         sessionId: sessionDbId,
@@ -870,7 +870,7 @@ export class WorkerService {
     sessionsSkipped: number;
     startedSessionIds: number[];
   }> {
-    const { PendingMessageStore } = await import('./sqlite/PendingMessageStore.js');
+    const { PendingMessageStore } = await import('./db/PendingMessageStore.js');
     const pendingStore = new PendingMessageStore(this.dbManager.getSessionStore().db, 3);
     const sessionStore = this.dbManager.getSessionStore();
 
@@ -880,29 +880,29 @@ export class WorkerService {
     const staleThreshold = Date.now() - STALE_SESSION_THRESHOLD_MS;
 
     try {
-      const staleSessionIds = sessionStore.db.prepare(`
+      const staleSessionIds = await sessionStore.db.all(`
         SELECT id FROM sdk_sessions
         WHERE status = 'active' AND started_at_epoch < ?
-      `).all(staleThreshold) as { id: number }[];
+      `, [staleThreshold]) as { id: number }[];
 
       if (staleSessionIds.length > 0) {
         const ids = staleSessionIds.map(r => r.id);
         const placeholders = ids.map(() => '?').join(',');
 
-        sessionStore.db.prepare(`
+        await sessionStore.db.run(`
           UPDATE sdk_sessions
           SET status = 'failed', completed_at_epoch = ?
           WHERE id IN (${placeholders})
-        `).run(Date.now(), ...ids);
+        `, [Date.now(), ...ids]);
 
         logger.info('SYSTEM', `Marked ${ids.length} stale sessions as failed`);
 
-        const msgResult = sessionStore.db.prepare(`
+        const msgResult = await sessionStore.db.run(`
           UPDATE pending_messages
           SET status = 'failed', failed_at_epoch = ?
           WHERE status = 'pending'
           AND session_db_id IN (${placeholders})
-        `).run(Date.now(), ...ids);
+        `, [Date.now(), ...ids]);
 
         if (msgResult.changes > 0) {
           logger.info('SYSTEM', `Marked ${msgResult.changes} pending messages from stale sessions as failed`);
@@ -912,7 +912,7 @@ export class WorkerService {
       logger.error('SYSTEM', 'Failed to clean up stale sessions', {}, error as Error);
     }
 
-    const orphanedSessionIds = pendingStore.getSessionsWithPendingMessages();
+    const orphanedSessionIds = await pendingStore.getSessionsWithPendingMessages();
 
     const result = {
       totalPendingSessions: orphanedSessionIds.length,
@@ -935,10 +935,10 @@ export class WorkerService {
           continue;
         }
 
-        const session = this.sessionManager.initializeSession(sessionDbId);
+        const session = await this.sessionManager.initializeSession(sessionDbId);
         logger.info('SYSTEM', `Starting processor for session ${sessionDbId}`, {
           project: session.project,
-          pendingCount: pendingStore.getPendingCount(sessionDbId)
+          pendingCount: await pendingStore.getPendingCount(sessionDbId)
         });
 
         this.startSessionProcessor(session, 'startup-recovery');
@@ -990,20 +990,24 @@ export class WorkerService {
    * Broadcast processing status change to SSE clients
    */
   broadcastProcessingStatus(): void {
-    const queueDepth = this.sessionManager.getTotalActiveWork();
-    const isProcessing = queueDepth > 0;
-    const activeSessions = this.sessionManager.getActiveSessionCount();
+    // We launch this as a detached promise so callers aren't blocked
+    this.sessionManager.getTotalActiveWork().then(queueDepth => {
+      const isProcessing = queueDepth > 0;
+      const activeSessions = this.sessionManager.getActiveSessionCount();
 
-    logger.info('WORKER', 'Broadcasting processing status', {
-      isProcessing,
-      queueDepth,
-      activeSessions
-    });
+      logger.info('WORKER', 'Broadcasting processing status', {
+        isProcessing,
+        queueDepth,
+        activeSessions
+      });
 
-    this.sseBroadcaster.broadcast({
-      type: 'processing_status',
-      isProcessing,
-      queueDepth
+      this.sseBroadcaster.broadcast({
+        type: 'processing_status',
+        isProcessing,
+        queueDepth
+      });
+    }).catch(err => {
+      logger.error('WORKER', 'Failed to broadcast processing status', {}, err);
     });
   }
 }

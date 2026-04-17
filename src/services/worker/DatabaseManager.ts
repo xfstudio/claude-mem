@@ -8,8 +8,9 @@
  * - ChromaSync integration
  */
 
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { SessionSearch } from '../sqlite/SessionSearch.js';
+import { SessionStore } from '../db/SessionStore.js';
+import { SessionSearch } from '../db/SessionSearch.js';
+import { getDatabaseProvider } from '../db/DatabaseFactory.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -25,9 +26,14 @@ export class DatabaseManager {
    * Initialize database connection (once, stays open)
    */
   async initialize(): Promise<void> {
+    const db = await getDatabaseProvider();
+
     // Open database connection (ONCE)
-    this.sessionStore = new SessionStore();
-    this.sessionSearch = new SessionSearch();
+    this.sessionStore = new SessionStore(db);
+    await this.sessionStore.init();
+
+    this.sessionSearch = new SessionSearch(db);
+    await this.sessionSearch.ensureFTSTables();
 
     // Initialize ChromaSync only if Chroma is enabled (SQLite-only fallback when disabled)
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
@@ -52,11 +58,11 @@ export class DatabaseManager {
     }
 
     if (this.sessionStore) {
-      this.sessionStore.close();
+      await this.sessionStore.close();
       this.sessionStore = null;
     }
     if (this.sessionSearch) {
-      this.sessionSearch.close();
+      await this.sessionSearch.close();
       this.sessionSearch = null;
     }
     logger.info('DB', 'Database closed');
@@ -96,14 +102,16 @@ export class DatabaseManager {
   /**
    * Get session by ID (throws if not found)
    */
-  getSessionById(sessionDbId: number): {
+  async getSessionById(sessionDbId: number): Promise<{
     id: number;
     content_session_id: string;
     memory_session_id: string | null;
     project: string;
+    platform_source: string;
     user_prompt: string;
-  } {
-    const session = this.getSessionStore().getSessionById(sessionDbId);
+    custom_title: string | null;
+  }> {
+    const session = await this.getSessionStore().getSessionById(sessionDbId);
     if (!session) {
       throw new Error(`Session ${sessionDbId} not found`);
     }

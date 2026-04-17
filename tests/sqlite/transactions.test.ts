@@ -3,24 +3,24 @@
  * Tests atomic transaction functions with in-memory database
  *
  * Sources:
- * - API patterns from src/services/sqlite/transactions.ts
- * - Type definitions from src/services/sqlite/transactions.ts
+ * - API patterns from src/services/db/transactions.ts
+ * - Type definitions from src/services/db/transactions.ts
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { ClaudeMemDatabase } from '../../src/services/db/Database.js';
 import {
   storeObservations,
   storeObservationsAndMarkComplete,
-} from '../../src/services/sqlite/transactions.js';
-import { getObservationById } from '../../src/services/sqlite/Observations.js';
-import { getSummaryForSession } from '../../src/services/sqlite/Summaries.js';
+} from '../../src/services/db/transactions.js';
+import { getObservationById } from '../../src/services/db/Observations.js';
+import { getSummaryForSession } from '../../src/services/db/Summaries.js';
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
-import type { ObservationInput } from '../../src/services/sqlite/observations/types.js';
-import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
+} from '../../src/services/db/Sessions.js';
+import type { ObservationInput } from '../../src/services/db/observations/types.js';
+import type { SummaryInput } from '../../src/services/db/summaries/types.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Transactions Module', () => {

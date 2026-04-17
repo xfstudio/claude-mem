@@ -96,7 +96,7 @@ export class SessionRoutes extends BaseRouteHandler {
   private static readonly STALE_GENERATOR_THRESHOLD_MS = 30_000; // 30 seconds (#1099)
   private static readonly MAX_SESSION_WALL_CLOCK_MS = 4 * 60 * 60 * 1000; // 4 hours (#1590)
 
-  private ensureGeneratorRunning(sessionDbId: number, source: string): void {
+  private async ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
     const session = this.sessionManager.getSession(sessionDbId);
     if (!session) return;
 
@@ -104,9 +104,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // been alive too long to prevent runaway API costs (Issue #1590).
     // Use the persisted started_at_epoch from the DB so the guard survives worker
     // restarts (session.startTime is reset to Date.now() on every re-activation).
-    const dbSessionRecord = this.dbManager.getSessionStore().db
-      .prepare('SELECT started_at_epoch FROM sdk_sessions WHERE id = ? LIMIT 1')
-      .get(sessionDbId) as { started_at_epoch: number } | undefined;
+    const dbSessionRecordRaw: any = await this.dbManager.getSessionStore().db
+      .all('SELECT started_at_epoch FROM sdk_sessions WHERE id = ? LIMIT 1', [sessionDbId]);
+    const dbSessionRecord = dbSessionRecordRaw?.[0] as { started_at_epoch: number } | undefined;
     const sessionOriginMs = dbSessionRecord?.started_at_epoch ?? session.startTime;
     const sessionAgeMs = Date.now() - sessionOriginMs;
     if (sessionAgeMs > SessionRoutes.MAX_SESSION_WALL_CLOCK_MS) {
@@ -136,7 +136,7 @@ export class SessionRoutes extends BaseRouteHandler {
     // Start generator if not running
     if (!session.generatorPromise) {
       // Apply tier routing before starting the generator
-      this.applyTierRouting(session);
+      await this.applyTierRouting(session);
       this.spawnInProgress.set(sessionDbId, true);
       this.startGeneratorWithProvider(session, selectedProvider, source);
       return;
@@ -220,7 +220,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const myController = session.abortController;
 
     session.generatorPromise = agent.startSession(session, this.workerService)
-      .catch(error => {
+      .catch(async (error) => {
         // Only log non-abort errors
         if (myController.signal.aborted) return;
 
@@ -240,6 +240,11 @@ export class SessionRoutes extends BaseRouteHandler {
           return;
         }
 
+        if (myController.signal.aborted) {
+          logger.debug('SESSION', `Generator error during abort (ignored)`, { sessionId: session.sessionDbId, provider });
+          return;
+        }
+
         logger.error('SESSION', `Generator failed`, {
           sessionId: session.sessionDbId,
           provider: provider,
@@ -249,7 +254,7 @@ export class SessionRoutes extends BaseRouteHandler {
         // Mark all processing messages as failed so they can be retried or abandoned
         const pendingStore = this.sessionManager.getPendingMessageStore();
         try {
-          const failedCount = pendingStore.markSessionMessagesFailed(session.sessionDbId);
+          const failedCount = await pendingStore.markSessionMessagesFailed(session.sessionDbId);
           if (failedCount > 0) {
             logger.error('SESSION', `Marked messages as failed after generator error`, {
               sessionId: session.sessionDbId,
@@ -287,7 +292,7 @@ export class SessionRoutes extends BaseRouteHandler {
         if (!wasAborted) {
           try {
             const pendingStore = this.sessionManager.getPendingMessageStore();
-            const pendingCount = pendingStore.getPendingCount(sessionDbId);
+            const pendingCount = await pendingStore.getPendingCount(sessionDbId);
 
             // CRITICAL: Limit consecutive restarts to prevent infinite loops
             // This prevents runaway API costs when there's a persistent error (e.g., memorySessionId not captured)
@@ -333,11 +338,11 @@ export class SessionRoutes extends BaseRouteHandler {
               const backoffMs = Math.min(1000 * Math.pow(2, session.consecutiveRestarts - 1), 8000);
 
               // Delay before restart with exponential backoff
-              setTimeout(() => {
+              setTimeout(async () => {
                 this.crashRecoveryScheduled.delete(sessionDbId);
                 const stillExists = this.sessionManager.getSession(sessionDbId);
                 if (stillExists && !stillExists.generatorPromise) {
-                  this.applyTierRouting(stillExists);
+                  await this.applyTierRouting(stillExists);
                   this.startGeneratorWithProvider(stillExists, this.getSelectedProvider(), 'crash-recovery');
                 }
               }, backoffMs);
@@ -382,7 +387,7 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Initialize a new session
    */
-  private handleSessionInit = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSessionInit = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
@@ -393,10 +398,10 @@ export class SessionRoutes extends BaseRouteHandler {
       has_userPrompt: !!userPrompt
     });
 
-    const session = this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
+    const session = await this.sessionManager.initializeSession(sessionDbId, userPrompt, promptNumber);
 
     // Get the latest user_prompt for this session to sync to Chroma
-    const latestPrompt = this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
+    const latestPrompt = await this.dbManager.getSessionStore().getLatestUserPrompt(session.contentSessionId);
 
     // Broadcast new prompt to SSE clients (for web UI)
     if (latestPrompt) {
@@ -439,7 +444,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Idempotent: ensure generator is running (matches handleObservations / handleSummarize)
-    this.ensureGeneratorRunning(sessionDbId, 'init');
+    void this.ensureGeneratorRunning(sessionDbId, 'init');
 
     // Broadcast session started event
     this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
@@ -451,13 +456,13 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue observations for processing
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
-  private handleObservations = this.wrapHandler((req: Request, res: Response): void => {
+  private handleObservations = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
     const { tool_name, tool_input, tool_response, prompt_number, cwd } = req.body;
 
-    this.sessionManager.queueObservation(sessionDbId, {
+    await this.sessionManager.queueObservation(sessionDbId, {
       tool_name,
       tool_input,
       tool_response,
@@ -466,7 +471,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'observation');
+    void this.ensureGeneratorRunning(sessionDbId, 'observation');
 
     // Broadcast observation queued event
     this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -478,16 +483,16 @@ export class SessionRoutes extends BaseRouteHandler {
    * Queue summarize request
    * CRITICAL: Ensures SDK agent is running to process the queue (ALWAYS SAVE EVERYTHING)
    */
-  private handleSummarize = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSummarize = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
     const { last_assistant_message } = req.body;
 
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    await this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // CRITICAL: Ensure SDK agent is running to consume the queue
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    void this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
@@ -498,7 +503,7 @@ export class SessionRoutes extends BaseRouteHandler {
   /**
    * Get session status
    */
-  private handleSessionStatus = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSessionStatus = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const sessionDbId = this.parseIntParam(req, res, 'sessionDbId');
     if (sessionDbId === null) return;
 
@@ -552,7 +557,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * POST /api/sessions/observations
    * Body: { contentSessionId, tool_name, tool_input, tool_response, cwd }
    */
-  private handleObservationsByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleObservationsByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, tool_name, tool_input, tool_response, cwd } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
     const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
@@ -590,8 +595,8 @@ export class SessionRoutes extends BaseRouteHandler {
       const store = this.dbManager.getSessionStore();
 
       // Get or create session
-      const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
-      const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+      const sessionDbId = await store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
+      const promptNumber = await store.getPromptNumberFromUserPrompts(contentSessionId);
 
       // Privacy check: skip if user prompt was entirely private
       const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -617,7 +622,7 @@ export class SessionRoutes extends BaseRouteHandler {
         : '{}';
 
       // Queue observation
-      this.sessionManager.queueObservation(sessionDbId, {
+      await this.sessionManager.queueObservation(sessionDbId, {
         tool_name,
         tool_input: cleanedToolInput,
         tool_response: cleanedToolResponse,
@@ -632,7 +637,7 @@ export class SessionRoutes extends BaseRouteHandler {
       });
 
       // Ensure SDK agent is running
-      this.ensureGeneratorRunning(sessionDbId, 'observation');
+      void this.ensureGeneratorRunning(sessionDbId, 'observation');
 
       // Broadcast observation queued event
       this.eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -652,7 +657,7 @@ export class SessionRoutes extends BaseRouteHandler {
    *
    * Checks privacy, queues summarize request for SDK agent
    */
-  private handleSummarizeByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId, last_assistant_message } = req.body;
     const platformSource = normalizePlatformSource(req.body.platformSource);
 
@@ -663,8 +668,8 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Get or create session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const sessionDbId = await store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+    const promptNumber = await store.getPromptNumberFromUserPrompts(contentSessionId);
 
     // Privacy check: skip if user prompt was entirely private
     const userPrompt = PrivacyCheckValidator.checkUserPromptPrivacy(
@@ -680,10 +685,10 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Queue summarize
-    this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
+    await this.sessionManager.queueSummarize(sessionDbId, last_assistant_message);
 
     // Ensure SDK agent is running
-    this.ensureGeneratorRunning(sessionDbId, 'summarize');
+    void this.ensureGeneratorRunning(sessionDbId, 'summarize');
 
     // Broadcast summarize queued event
     this.eventBroadcaster.broadcastSummarizeQueued();
@@ -697,7 +702,7 @@ export class SessionRoutes extends BaseRouteHandler {
    *
    * Returns queue depth so the Stop hook can wait for summary completion.
    */
-  private handleStatusByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleStatusByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const contentSessionId = req.query.contentSessionId as string;
 
     if (!contentSessionId) {
@@ -705,8 +710,8 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '');
-    const session = this.sessionManager.getSession(sessionDbId);
+    const sessionDbId = await store.createSDKSession(contentSessionId, '', '');
+    const session = await this.sessionManager.getSession(sessionDbId);
 
     if (!session) {
       res.json({ status: 'not_found', queueLength: 0 });
@@ -751,10 +756,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // Look up sessionDbId from contentSessionId (createSDKSession is idempotent)
     // Pass empty strings - we only need the ID lookup, not to create a new session
-    const sessionDbId = store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
+    const sessionDbId = await store.createSDKSession(contentSessionId, '', '', undefined, platformSource);
 
     // Check if session is in the active sessions map
-    const activeSession = this.sessionManager.getSession(sessionDbId);
+    const activeSession = await this.sessionManager.getSession(sessionDbId);
     if (!activeSession) {
       // Session may not be in memory (already completed or never initialized)
       // Still proceed with DB-backed completion so the row gets marked completed
@@ -789,7 +794,7 @@ export class SessionRoutes extends BaseRouteHandler {
    *
    * Returns: { sessionDbId, promptNumber, skipped: boolean, reason?: string }
    */
-  private handleSessionInitByClaudeId = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
 
     // Only contentSessionId is truly required — Cursor and other platforms
@@ -815,17 +820,17 @@ export class SessionRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
 
     // Step 1: Create/get SDK session (idempotent INSERT OR IGNORE)
-    const sessionDbId = store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
+    const sessionDbId = await store.createSDKSession(contentSessionId, project, prompt, customTitle, platformSource);
 
     // Verify session creation with DB lookup
-    const dbSession = store.getSessionById(sessionDbId);
+    const dbSession = await store.getSessionById(sessionDbId);
     const isNewSession = !dbSession?.memory_session_id;
     logger.info('SESSION', `CREATED | contentSessionId=${contentSessionId} → sessionDbId=${sessionDbId} | isNew=${isNewSession} | project=${project}`, {
       sessionId: sessionDbId
     });
 
     // Step 2: Get next prompt number from user_prompts count
-    const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId);
+    const currentCount = await store.getPromptNumberFromUserPrompts(contentSessionId);
     const promptNumber = currentCount + 1;
 
     // Debug-level alignment logs for detailed tracing
@@ -857,11 +862,11 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     // Step 5: Save cleaned user prompt
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
+    await store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt);
 
     // Step 6: Check if SDK agent is already running for this session (#1079)
     // If contextInjected is true, the hook should skip re-initializing the SDK agent
-    const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+    const contextInjected = await this.sessionManager.getSession(sessionDbId) !== undefined;
 
     // Debug-level log since CREATED already logged the key info
     logger.debug('SESSION', 'User prompt saved', {
@@ -889,7 +894,7 @@ export class SessionRoutes extends BaseRouteHandler {
    * - All simple tools → simple model (e.g., Haiku)
    * - Otherwise → default model (no override)
    */
-  private applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): void {
+  private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
@@ -901,7 +906,7 @@ export class SessionRoutes extends BaseRouteHandler {
     session.modelOverride = undefined;
 
     const pendingStore = this.sessionManager.getPendingMessageStore();
-    const pending = pendingStore.peekPendingTypes(session.sessionDbId);
+    const pending = await pendingStore.peekPendingTypes(session.sessionDbId);
 
     if (pending.length === 0) {
       session.modelOverride = undefined;

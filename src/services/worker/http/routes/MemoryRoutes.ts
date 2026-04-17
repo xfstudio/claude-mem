@@ -39,7 +39,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     const chromaSync = this.dbManager.getChromaSync();
 
     // 1. Get or create manual session for project
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject);
+    const memorySessionId = await sessionStore.getOrCreateManualSession(targetProject);
 
     // 2. Build observation
     const observation = {
@@ -54,7 +54,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     };
 
     // 3. Store to SQLite
-    const result = sessionStore.storeObservation(
+    const result = await sessionStore.storeObservation(
       memorySessionId,
       targetProject,
       observation,
@@ -69,7 +69,7 @@ export class MemoryRoutes extends BaseRouteHandler {
     });
 
     // 4. Sync to ChromaDB (async, fire-and-forget)
-    chromaSync.syncObservation(
+    chromaSync?.syncObservation(
       result.id,
       memorySessionId,
       targetProject,

@@ -3,18 +3,18 @@
  * Tests modular session functions with in-memory database
  *
  * Sources:
- * - API patterns from src/services/sqlite/sessions/create.ts
- * - API patterns from src/services/sqlite/sessions/get.ts
+ * - API patterns from src/services/db/sessions/create.ts
+ * - API patterns from src/services/db/sessions/get.ts
  * - Test pattern from tests/session_store.test.ts
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { ClaudeMemDatabase } from '../../src/services/db/Database.js';
 import {
   createSDKSession,
   getSessionById,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
+} from '../../src/services/db/Sessions.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Sessions Module', () => {

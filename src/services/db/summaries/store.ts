@@ -1,7 +1,7 @@
 /**
  * Store session summaries in the database
  */
-import type { Database } from 'bun:sqlite';
+import { IDatabaseProvider } from '../provider/IDatabaseProvider.js';
 import { logger } from '../../../utils/logger.js';
 import type { SummaryInput, StoreSummaryResult } from './types.js';
 
@@ -17,28 +17,27 @@ import type { SummaryInput, StoreSummaryResult } from './types.js';
  * @param discoveryTokens - Token count for discovery (default 0)
  * @param overrideTimestampEpoch - Optional timestamp override for backlog processing
  */
-export function storeSummary(
-  db: Database,
+export async function storeSummary(
+  db: IDatabaseProvider,
   memorySessionId: string,
   project: string,
   summary: SummaryInput,
   promptNumber?: number,
   discoveryTokens: number = 0,
   overrideTimestampEpoch?: number
-): StoreSummaryResult {
+): Promise<StoreSummaryResult >{
   // Use override timestamp if provided (for processing backlog messages with original timestamps)
   const timestampEpoch = overrideTimestampEpoch ?? Date.now();
   const timestampIso = new Date(timestampEpoch).toISOString();
 
-  const stmt = db.prepare(`
+  
+
+  const result = await db.run(`
     INSERT INTO session_summaries
     (memory_session_id, project, request, investigated, learned, completed,
      next_steps, notes, prompt_number, discovery_tokens, created_at, created_at_epoch)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const result = stmt.run(
-    memorySessionId,
+  `, [memorySessionId,
     project,
     summary.request,
     summary.investigated,
@@ -49,8 +48,7 @@ export function storeSummary(
     promptNumber || null,
     discoveryTokens,
     timestampIso,
-    timestampEpoch
-  );
+    timestampEpoch]);
 
   return {
     id: Number(result.lastInsertRowid),

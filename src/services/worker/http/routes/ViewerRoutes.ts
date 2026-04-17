@@ -67,7 +67,7 @@ export class ViewerRoutes extends BaseRouteHandler {
   /**
    * SSE stream endpoint
    */
-  private handleSSEStream = this.wrapHandler((req: Request, res: Response): void => {
+  private handleSSEStream = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     // Guard: if DB is not yet initialized, return 503 before registering client
     try {
       this.dbManager.getSessionStore();
@@ -85,7 +85,7 @@ export class ViewerRoutes extends BaseRouteHandler {
     this.sseBroadcaster.addClient(res);
 
     // Send initial_load event with project/source catalog
-    const projectCatalog = this.dbManager.getSessionStore().getProjectCatalog();
+    const projectCatalog = await this.dbManager.getSessionStore().getProjectCatalog();
     this.sseBroadcaster.broadcast({
       type: 'initial_load',
       projects: projectCatalog.projects,
@@ -95,8 +95,8 @@ export class ViewerRoutes extends BaseRouteHandler {
     });
 
     // Send initial processing status (based on queue depth + active generators)
-    const isProcessing = this.sessionManager.isAnySessionProcessing();
-    const queueDepth = this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
+    const isProcessing = await this.sessionManager.isAnySessionProcessing();
+    const queueDepth = await this.sessionManager.getTotalActiveWork(); // Includes queued + actively processing
     this.sseBroadcaster.broadcast({
       type: 'processing_status',
       isProcessing,

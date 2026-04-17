@@ -3,29 +3,32 @@
  * Tests modular summary functions with in-memory database
  *
  * Sources:
- * - API patterns from src/services/sqlite/summaries/store.ts
- * - API patterns from src/services/sqlite/summaries/get.ts
- * - Type definitions from src/services/sqlite/summaries/types.ts
+ * - API patterns from src/services/db/summaries/store.ts
+ * - API patterns from src/services/db/summaries/get.ts
+ * - Type definitions from src/services/db/summaries/types.ts
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { ClaudeMemDatabase } from '../../src/services/sqlite/Database.js';
+import { ClaudeMemDatabase } from '../../src/services/db/Database.js';
 import {
   storeSummary,
   getSummaryForSession,
-} from '../../src/services/sqlite/Summaries.js';
+} from '../../src/services/db/Summaries.js';
 import {
   createSDKSession,
   updateMemorySessionId,
-} from '../../src/services/sqlite/Sessions.js';
-import type { SummaryInput } from '../../src/services/sqlite/summaries/types.js';
+} from '../../src/services/db/Sessions.js';
+import { SqliteProvider } from '../../src/services/db/provider/SqliteProvider.js';
+import type { SummaryInput } from '../../src/services/db/summaries/types.js';
 import type { Database } from 'bun:sqlite';
 
 describe('Summaries Module', () => {
   let db: Database;
+  let dbProvider: SqliteProvider;
 
   beforeEach(() => {
     db = new ClaudeMemDatabase(':memory:').db;
+    dbProvider = new SqliteProvider(db);
   });
 
   afterEach(() => {
@@ -53,12 +56,12 @@ describe('Summaries Module', () => {
   }
 
   describe('storeSummary', () => {
-    it('should store summary and return id and createdAtEpoch', () => {
+    it('should store summary and return id and createdAtEpoch', async () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-123', 'mem-session-sum-123');
       const project = 'test-project';
       const summary = createSummaryInput();
 
-      const result = storeSummary(db, memorySessionId, project, summary);
+      const result = await storeSummary(dbProvider, memorySessionId, project, summary);
 
       expect(typeof result.id).toBe('number');
       expect(result.id).toBeGreaterThan(0);
@@ -66,7 +69,7 @@ describe('Summaries Module', () => {
       expect(result.createdAtEpoch).toBeGreaterThan(0);
     });
 
-    it('should store all summary fields correctly', () => {
+    it('should store all summary fields correctly', async () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-456', 'mem-session-sum-456');
       const project = 'test-project';
       const summary = createSummaryInput({
@@ -78,9 +81,9 @@ describe('Summaries Module', () => {
         notes: 'May need caching',
       });
 
-      const result = storeSummary(db, memorySessionId, project, summary, 1, 500);
+      const result = await storeSummary(dbProvider, memorySessionId, project, summary, 1, 500);
 
-      const stored = getSummaryForSession(db, memorySessionId);
+      const stored = await getSummaryForSession(dbProvider, memorySessionId);
       expect(stored).not.toBeNull();
       expect(stored?.request).toBe('Refactor the database layer');
       expect(stored?.investigated).toBe('Analyzed current schema');
@@ -91,14 +94,14 @@ describe('Summaries Module', () => {
       expect(stored?.prompt_number).toBe(1);
     });
 
-    it('should respect overrideTimestampEpoch', () => {
+    it('should respect overrideTimestampEpoch', async () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-789', 'mem-session-sum-789');
       const project = 'test-project';
       const summary = createSummaryInput();
       const pastTimestamp = 1650000000000; // Apr 15, 2022
 
-      const result = storeSummary(
-        db,
+      const result = await storeSummary(
+        dbProvider,
         memorySessionId,
         project,
         summary,
@@ -109,15 +112,15 @@ describe('Summaries Module', () => {
 
       expect(result.createdAtEpoch).toBe(pastTimestamp);
 
-      const stored = getSummaryForSession(db, memorySessionId);
+      const stored = await getSummaryForSession(dbProvider, memorySessionId);
       expect(stored?.created_at_epoch).toBe(pastTimestamp);
     });
 
-    it('should use current time when overrideTimestampEpoch not provided', () => {
+    it('should use current time when overrideTimestampEpoch not provided', async () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-now', 'session-sum-now');
       const before = Date.now();
-      const result = storeSummary(
-        db,
+      const result = await storeSummary(
+        dbProvider,
         memorySessionId,
         'project',
         createSummaryInput()
@@ -128,12 +131,12 @@ describe('Summaries Module', () => {
       expect(result.createdAtEpoch).toBeLessThanOrEqual(after);
     });
 
-    it('should handle null notes', () => {
+    it('should handle null notes', async () => {
       const memorySessionId = createSessionWithMemoryId('content-sum-null', 'session-sum-null');
       const summary = createSummaryInput({ notes: null });
 
-      const result = storeSummary(db, memorySessionId, 'project', summary);
-      const stored = getSummaryForSession(db, memorySessionId);
+      const result = await storeSummary(dbProvider, memorySessionId, 'project', summary);
+      const stored = await getSummaryForSession(dbProvider, memorySessionId);
 
       expect(stored).not.toBeNull();
       expect(stored?.notes).toBeNull();
@@ -141,30 +144,30 @@ describe('Summaries Module', () => {
   });
 
   describe('getSummaryForSession', () => {
-    it('should retrieve summary by memory_session_id', () => {
+    it('should retrieve summary by memory_session_id', async () => {
       const memorySessionId = createSessionWithMemoryId('content-unique', 'unique-mem-session');
       const summary = createSummaryInput({ request: 'Unique request' });
 
-      storeSummary(db, memorySessionId, 'project', summary);
+      await storeSummary(dbProvider, memorySessionId, 'project', summary);
 
-      const retrieved = getSummaryForSession(db, memorySessionId);
+      const retrieved = await getSummaryForSession(dbProvider, memorySessionId);
 
       expect(retrieved).not.toBeNull();
       expect(retrieved?.request).toBe('Unique request');
     });
 
-    it('should return null for session with no summary', () => {
-      const retrieved = getSummaryForSession(db, 'nonexistent-session');
+    it('should return null for session with no summary', async () => {
+      const retrieved = await getSummaryForSession(dbProvider, 'nonexistent-session');
 
       expect(retrieved).toBeNull();
     });
 
-    it('should return most recent summary when multiple exist', () => {
+    it('should return most recent summary when multiple exist', async () => {
       const memorySessionId = createSessionWithMemoryId('content-multi', 'multi-summary-session');
 
       // Store older summary
-      storeSummary(
-        db,
+      await storeSummary(
+        dbProvider,
         memorySessionId,
         'project',
         createSummaryInput({ request: 'First request' }),
@@ -174,8 +177,8 @@ describe('Summaries Module', () => {
       );
 
       // Store newer summary
-      storeSummary(
-        db,
+      await storeSummary(
+        dbProvider,
         memorySessionId,
         'project',
         createSummaryInput({ request: 'Second request' }),
@@ -184,20 +187,20 @@ describe('Summaries Module', () => {
         2000000000000
       );
 
-      const retrieved = getSummaryForSession(db, memorySessionId);
+      const retrieved = await getSummaryForSession(dbProvider, memorySessionId);
 
       expect(retrieved).not.toBeNull();
       expect(retrieved?.request).toBe('Second request');
       expect(retrieved?.prompt_number).toBe(2);
     });
 
-    it('should return summary with all expected fields', () => {
+    it('should return summary with all expected fields', async () => {
       const memorySessionId = createSessionWithMemoryId('content-fields', 'fields-check-session');
       const summary = createSummaryInput();
 
-      storeSummary(db, memorySessionId, 'project', summary, 1, 100, 1500000000000);
+      await storeSummary(dbProvider, memorySessionId, 'project', summary, 1, 100, 1500000000000);
 
-      const retrieved = getSummaryForSession(db, memorySessionId);
+      const retrieved = await getSummaryForSession(dbProvider, memorySessionId);
 
       expect(retrieved).not.toBeNull();
       expect(retrieved).toHaveProperty('request');

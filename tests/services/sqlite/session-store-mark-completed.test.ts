@@ -5,7 +5,7 @@
  * - Uses real SQLite with ':memory:' - tests actual SQL and schema
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { SessionStore } from '../../../src/services/db/SessionStore.js';
 
 describe('SessionStore.markSessionCompleted', () => {
   let store: SessionStore;

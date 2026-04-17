@@ -1,7 +1,7 @@
 /**
  * Get recent session summaries from the database
  */
-import type { Database } from 'bun:sqlite';
+import { IDatabaseProvider } from '../provider/IDatabaseProvider.js';
 import { logger } from '../../../utils/logger.js';
 import type { RecentSummary, SummaryWithSessionInfo, FullSummary } from './types.js';
 
@@ -12,12 +12,14 @@ import type { RecentSummary, SummaryWithSessionInfo, FullSummary } from './types
  * @param project - Project name to filter by
  * @param limit - Maximum number of summaries to return (default 10)
  */
-export function getRecentSummaries(
-  db: Database,
+export async function getRecentSummaries(
+  db: IDatabaseProvider,
   project: string,
   limit: number = 10
-): RecentSummary[] {
-  const stmt = db.prepare(`
+): Promise<RecentSummary[] >{
+  
+
+  return await db.all(`
     SELECT
       request, investigated, learned, completed, next_steps,
       files_read, files_edited, notes, prompt_number, created_at
@@ -25,9 +27,7 @@ export function getRecentSummaries(
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(project, limit) as RecentSummary[];
+  `, [project, limit]) as RecentSummary[];
 }
 
 /**
@@ -37,12 +37,14 @@ export function getRecentSummaries(
  * @param project - Project name to filter by
  * @param limit - Maximum number of summaries to return (default 3)
  */
-export function getRecentSummariesWithSessionInfo(
-  db: Database,
+export async function getRecentSummariesWithSessionInfo(
+  db: IDatabaseProvider,
   project: string,
   limit: number = 3
-): SummaryWithSessionInfo[] {
-  const stmt = db.prepare(`
+): Promise<SummaryWithSessionInfo[] >{
+  
+
+  return await db.all(`
     SELECT
       memory_session_id, request, learned, completed, next_steps,
       prompt_number, created_at
@@ -50,9 +52,7 @@ export function getRecentSummariesWithSessionInfo(
     WHERE project = ?
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(project, limit) as SummaryWithSessionInfo[];
+  `, [project, limit]) as SummaryWithSessionInfo[];
 }
 
 /**
@@ -61,18 +61,18 @@ export function getRecentSummariesWithSessionInfo(
  * @param db - Database instance
  * @param limit - Maximum number of summaries to return (default 50)
  */
-export function getAllRecentSummaries(
-  db: Database,
+export async function getAllRecentSummaries(
+  db: IDatabaseProvider,
   limit: number = 50
-): FullSummary[] {
-  const stmt = db.prepare(`
+): Promise<FullSummary[] >{
+  
+
+  return await db.all(`
     SELECT id, request, investigated, learned, completed, next_steps,
            files_read, files_edited, notes, project, prompt_number,
            created_at, created_at_epoch
     FROM session_summaries
     ORDER BY created_at_epoch DESC
     LIMIT ?
-  `);
-
-  return stmt.all(limit) as FullSummary[];
+  `, [limit]) as FullSummary[];
 }

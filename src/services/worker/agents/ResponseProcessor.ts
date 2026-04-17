@@ -99,7 +99,7 @@ export async function processAgentResponse(
   // in case the DB was somehow not updated (race condition, crash, etc.).
   // In multi-terminal scenarios, createSDKSession() now resets memory_session_id to NULL
   // for each new generator, ensuring clean isolation.
-  sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
+  await sessionStore.ensureMemorySessionIdRegistered(session.sessionDbId, session.memorySessionId);
 
   // Log pre-storage with session ID chain for verification
   logger.info('DB', `STORING | sessionDbId=${session.sessionDbId} | memorySessionId=${session.memorySessionId} | obsCount=${observations.length} | hasSummary=${!!summaryForStore}`, {
@@ -109,7 +109,7 @@ export async function processAgentResponse(
 
   // ATOMIC TRANSACTION: Store observations + summary ONCE
   // Messages are already deleted from queue on claim, so no completion tracking needed
-  const result = sessionStore.storeObservations(
+  const result = await sessionStore.storeObservations(
     session.memorySessionId,
     session.project,
     observations,
@@ -264,7 +264,7 @@ async function syncAndBroadcastObservations(
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
   // Handle both string 'true' and boolean true from JSON settings
   const settingValue = settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED;
-  const folderClaudeMdEnabled = settingValue === 'true' || settingValue === true;
+  const folderClaudeMdEnabled = String(settingValue) === 'true';
 
   if (folderClaudeMdEnabled) {
     const allFilePaths: string[] = [];

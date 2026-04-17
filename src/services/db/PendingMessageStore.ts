@@ -1,4 +1,4 @@
-import { Database } from './sqlite-compat.js';
+import { IDatabaseProvider } from './provider/IDatabaseProvider.js';
 import type { PendingMessage } from '../worker-types.js';
 import { logger } from '../../utils/logger.js';
 
@@ -45,10 +45,10 @@ export interface PersistentPendingMessage {
  * - getSessionsWithPendingMessages() - Find sessions that need recovery on startup
  */
 export class PendingMessageStore {
-  private db: Database;
+  private db: IDatabaseProvider;
   private maxRetries: number;
 
-  constructor(db: Database, maxRetries: number = 3) {
+  constructor(db: IDatabaseProvider, maxRetries: number = 3) {
     this.db = db;
     this.maxRetries = maxRetries;
   }
@@ -57,18 +57,16 @@ export class PendingMessageStore {
    * Enqueue a new message (persist before processing)
    * @returns The database ID of the persisted message
    */
-  enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): number {
+  async enqueue(sessionDbId: number, contentSessionId: string, message: PendingMessage): Promise<number> {
     const now = Date.now();
-    const stmt = this.db.prepare(`
+    const result = await this.db.run(`
       INSERT INTO pending_messages (
         session_db_id, content_session_id, message_type,
         tool_name, tool_input, tool_response, cwd,
         last_assistant_message,
         prompt_number, status, retry_count, created_at_epoch
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)
-    `);
-
-    const result = stmt.run(
+    `, [
       sessionDbId,
       contentSessionId,
       message.type,
@@ -79,7 +77,7 @@ export class PendingMessageStore {
       message.last_assistant_message || null,
       message.prompt_number || null,
       now
-    );
+    ]);
 
     return result.lastInsertRowid as number;
   }
@@ -90,42 +88,39 @@ export class PendingMessageStore {
    * Message stays in DB until confirmProcessed() is called.
    * Uses a transaction to prevent race conditions.
    */
-  claimNextMessage(sessionDbId: number): PersistentPendingMessage | null {
-    const claimTx = this.db.transaction((sessionId: number) => {
+  async claimNextMessage(sessionDbId: number): Promise<PersistentPendingMessage | null> {
+    const claimTx = async (sessionId: number) => {
       // Capture time inside transaction so it's fresh if WAL contention causes retry
       const now = Date.now();
       // Self-healing: reset stale 'processing' messages back to 'pending'
       // This recovers from generator crashes without external timers
       // Note: strict < means messages must be OLDER than threshold to be reset
       const staleCutoff = now - STALE_PROCESSING_THRESHOLD_MS;
-      const resetStmt = this.db.prepare(`
+      const resetResult = await this.db.run(`
         UPDATE pending_messages
         SET status = 'pending', started_processing_at_epoch = NULL
-        WHERE session_db_id = ? AND status = 'processing'
+        WHERE session_db_id = ? AND status = \'processing\'
           AND started_processing_at_epoch < ?
-      `);
-      const resetResult = resetStmt.run(sessionId, staleCutoff);
+      `, [sessionId, staleCutoff]);
       if (resetResult.changes > 0) {
         logger.info('QUEUE', `SELF_HEAL | sessionDbId=${sessionId} | recovered ${resetResult.changes} stale processing message(s)`);
       }
 
-      const peekStmt = this.db.prepare(`
+      const msg = await this.db.get(`
         SELECT * FROM pending_messages
         WHERE session_db_id = ? AND status = 'pending'
         ORDER BY id ASC
         LIMIT 1
-      `);
-      const msg = peekStmt.get(sessionId) as PersistentPendingMessage | null;
+      `, [sessionId]) as PersistentPendingMessage | null;
 
       if (msg) {
         // CRITICAL FIX: Mark as 'processing' instead of deleting
         // Message will be deleted by confirmProcessed() after successful store
-        const updateStmt = this.db.prepare(`
+        await this.db.run(`
           UPDATE pending_messages
-          SET status = 'processing', started_processing_at_epoch = ?
+          SET status = \'processing\', started_processing_at_epoch = ?
           WHERE id = ?
-        `);
-        updateStmt.run(now, msg.id);
+        `, [now, msg.id]);
 
         // Log claim with minimal info (avoid logging full payload)
         logger.info('QUEUE', `CLAIMED | sessionDbId=${sessionId} | messageId=${msg.id} | type=${msg.message_type}`, {
@@ -133,9 +128,9 @@ export class PendingMessageStore {
         });
       }
       return msg;
-    });
+    };
 
-    return claimTx(sessionDbId) as PersistentPendingMessage | null;
+    return await claimTx(sessionDbId) as PersistentPendingMessage | null;
   }
 
   /**
@@ -143,9 +138,8 @@ export class PendingMessageStore {
    * CRITICAL: Only call this AFTER the observation/summary has been stored to DB.
    * This prevents message loss on generator crash.
    */
-  confirmProcessed(messageId: number): void {
-    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-    const result = stmt.run(messageId);
+  async confirmProcessed(messageId: number): Promise<void> {
+    const result = await this.db.run('DELETE FROM pending_messages WHERE id = ?', [messageId]);
     if (result.changes > 0) {
       logger.debug('QUEUE', `CONFIRMED | messageId=${messageId} | deleted from queue`);
     }
@@ -157,24 +151,21 @@ export class PendingMessageStore {
    * @param thresholdMs Messages processing longer than this are considered stale (default: 5 minutes)
    * @returns Number of messages reset
    */
-  resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, sessionDbId?: number): number {
+  async resetStaleProcessingMessages(thresholdMs: number = 5 * 60 * 1000, sessionDbId?: number): Promise<number> {
     const cutoff = Date.now() - thresholdMs;
-    let stmt;
     let result;
     if (sessionDbId !== undefined) {
-      stmt = this.db.prepare(`
+      result = await this.db.run(`
         UPDATE pending_messages
         SET status = 'pending', started_processing_at_epoch = NULL
         WHERE status = 'processing' AND started_processing_at_epoch < ? AND session_db_id = ?
-      `);
-      result = stmt.run(cutoff, sessionDbId);
+      `, [cutoff, sessionDbId]);
     } else {
-      stmt = this.db.prepare(`
+      result = await this.db.run(`
         UPDATE pending_messages
         SET status = 'pending', started_processing_at_epoch = NULL
         WHERE status = 'processing' AND started_processing_at_epoch < ?
-      `);
-      result = stmt.run(cutoff);
+      `, [cutoff]);
     }
     if (result.changes > 0) {
       logger.info('QUEUE', `RESET_STALE | count=${result.changes} | thresholdMs=${thresholdMs}${sessionDbId !== undefined ? ` | sessionDbId=${sessionDbId}` : ''}`);
@@ -185,13 +176,12 @@ export class PendingMessageStore {
   /**
    * Get all pending messages for session (ordered by creation time)
    */
-  getAllPending(sessionDbId: number): PersistentPendingMessage[] {
-    const stmt = this.db.prepare(`
+  async getAllPending(sessionDbId: number): Promise<PersistentPendingMessage[]> {
+    return await this.db.all(`
       SELECT * FROM pending_messages
       WHERE session_db_id = ? AND status = 'pending'
       ORDER BY id ASC
-    `);
-    return stmt.all(sessionDbId) as PersistentPendingMessage[];
+    `, [sessionDbId]) as PersistentPendingMessage[];
   }
 
   /**
@@ -199,8 +189,8 @@ export class PendingMessageStore {
    * Returns pending, processing, and failed messages (not processed - they're deleted)
    * Joins with sdk_sessions to get project name
    */
-  getQueueMessages(): (PersistentPendingMessage & { project: string | null })[] {
-    const stmt = this.db.prepare(`
+  async getQueueMessages(): Promise<(PersistentPendingMessage & { project: string | null })[]> {
+    return await this.db.all(`
       SELECT pm.*, ss.project
       FROM pending_messages pm
       LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
@@ -212,20 +202,18 @@ export class PendingMessageStore {
           WHEN 'pending' THEN 2
         END,
         pm.created_at_epoch ASC
-    `);
-    return stmt.all() as (PersistentPendingMessage & { project: string | null })[];
+    `) as (PersistentPendingMessage & { project: string | null })[];
   }
 
   /**
    * Get count of stuck messages (processing longer than threshold)
    */
-  getStuckCount(thresholdMs: number): number {
+  async getStuckCount(thresholdMs: number): Promise<number> {
     const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
+    const result = await this.db.get(`
       SELECT COUNT(*) as count FROM pending_messages
       WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.get(cutoff) as { count: number };
+    `, [cutoff]) as { count: number };
     return result.count;
   }
 
@@ -233,27 +221,25 @@ export class PendingMessageStore {
    * Retry a specific message (reset to pending)
    * Works for pending (re-queue), processing (reset stuck), and failed messages
    */
-  retryMessage(messageId: number): boolean {
-    const stmt = this.db.prepare(`
+  async retryMessage(messageId: number): Promise<boolean> {
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
       WHERE id = ? AND status IN ('pending', 'processing', 'failed')
-    `);
-    const result = stmt.run(messageId);
-    return result.changes > 0;
+    `, [messageId]);
+    return (result as { changes: number }).changes > 0;
   }
 
   /**
    * Reset all processing messages for a session to pending
    * Used when force-restarting a stuck session
    */
-  resetProcessingToPending(sessionDbId: number): number {
-    const stmt = this.db.prepare(`
+  async resetProcessingToPending(sessionDbId: number): Promise<number> {
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
       WHERE session_db_id = ? AND status = 'processing'
-    `);
-    const result = stmt.run(sessionDbId);
+    `, [sessionDbId]);
     return result.changes;
   }
 
@@ -262,19 +248,17 @@ export class PendingMessageStore {
    * Used in error recovery when session generator crashes
    * @returns Number of messages marked failed
    */
-  markSessionMessagesFailed(sessionDbId: number): number {
+  async markSessionMessagesFailed(sessionDbId: number): Promise<number> {
     const now = Date.now();
 
     // Atomic update - all processing messages for session → failed
     // Note: This bypasses retry logic since generator failures are session-level,
     // not message-level. Individual message failures use markFailed() instead.
-    const stmt = this.db.prepare(`
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'failed', failed_at_epoch = ?
       WHERE session_db_id = ? AND status = 'processing'
-    `);
-
-    const result = stmt.run(now, sessionDbId);
+    `, [now, sessionDbId]);
     return result.changes;
   }
 
@@ -284,37 +268,34 @@ export class PendingMessageStore {
    * prevents the session from appearing in getSessionsWithPendingMessages forever.
    * @returns Number of messages marked failed
    */
-  markAllSessionMessagesAbandoned(sessionDbId: number): number {
+  async markAllSessionMessagesAbandoned(sessionDbId: number): Promise<number> {
     const now = Date.now();
-    const stmt = this.db.prepare(`
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'failed', failed_at_epoch = ?
       WHERE session_db_id = ? AND status IN ('pending', 'processing')
-    `);
-    const result = stmt.run(now, sessionDbId);
+    `, [now, sessionDbId]);
     return result.changes;
   }
 
   /**
    * Abort a specific message (delete from queue)
    */
-  abortMessage(messageId: number): boolean {
-    const stmt = this.db.prepare('DELETE FROM pending_messages WHERE id = ?');
-    const result = stmt.run(messageId);
+  async abortMessage(messageId: number): Promise<boolean> {
+    const result = await this.db.run('DELETE FROM pending_messages WHERE id = ?', [messageId]);
     return result.changes > 0;
   }
 
   /**
    * Retry all stuck messages at once
    */
-  retryAllStuck(thresholdMs: number): number {
+  async retryAllStuck(thresholdMs: number): Promise<number> {
     const cutoff = Date.now() - thresholdMs;
-    const stmt = this.db.prepare(`
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
       WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const result = stmt.run(cutoff);
+    `, [cutoff]);
     return result.changes;
   }
 
@@ -322,17 +303,16 @@ export class PendingMessageStore {
    * Get recently processed messages (for UI feedback)
    * Shows messages completed in the last N minutes so users can see their stuck items were processed
    */
-  getRecentlyProcessed(limit: number = 10, withinMinutes: number = 30): (PersistentPendingMessage & { project: string | null })[] {
+  async getRecentlyProcessed(limit: number = 10, withinMinutes: number = 30): Promise<(PersistentPendingMessage & { project: string | null })[]> {
     const cutoff = Date.now() - (withinMinutes * 60 * 1000);
-    const stmt = this.db.prepare(`
+    return await this.db.all(`
       SELECT pm.*, ss.project
       FROM pending_messages pm
       LEFT JOIN sdk_sessions ss ON pm.content_session_id = ss.content_session_id
       WHERE pm.status = 'processed' AND pm.completed_at_epoch > ?
       ORDER BY pm.completed_at_epoch DESC
       LIMIT ?
-    `);
-    return stmt.all(cutoff, limit) as (PersistentPendingMessage & { project: string | null })[];
+    `, [cutoff, limit]) as (PersistentPendingMessage & { project: string | null })[];
   }
 
   /**
@@ -340,30 +320,28 @@ export class PendingMessageStore {
    * If retry_count < maxRetries, moves back to 'pending' for retry
    * Otherwise marks as 'failed' permanently
    */
-  markFailed(messageId: number): void {
+  async markFailed(messageId: number): Promise<void> {
     const now = Date.now();
 
     // Get current retry count
-    const msg = this.db.prepare('SELECT retry_count FROM pending_messages WHERE id = ?').get(messageId) as { retry_count: number } | undefined;
+    const msg = await this.db.get('SELECT retry_count FROM pending_messages WHERE id = ?', [messageId]) as { retry_count: number } | undefined;
 
     if (!msg) return;
 
     if (msg.retry_count < this.maxRetries) {
       // Move back to pending for retry
-      const stmt = this.db.prepare(`
+      await this.db.run(`
         UPDATE pending_messages
         SET status = 'pending', retry_count = retry_count + 1, started_processing_at_epoch = NULL
         WHERE id = ?
-      `);
-      stmt.run(messageId);
+      `, [messageId]);
     } else {
       // Max retries exceeded, mark as permanently failed
-      const stmt = this.db.prepare(`
+      await this.db.run(`
         UPDATE pending_messages
         SET status = 'failed', completed_at_epoch = ?
         WHERE id = ?
-      `);
-      stmt.run(now, messageId);
+      `, [now, messageId]);
     }
   }
 
@@ -372,28 +350,25 @@ export class PendingMessageStore {
    * @param thresholdMs Messages processing longer than this are considered stuck (0 = reset all)
    * @returns Number of messages reset
    */
-  resetStuckMessages(thresholdMs: number): number {
+  async resetStuckMessages(thresholdMs: number): Promise<number> {
     const cutoff = thresholdMs === 0 ? Date.now() : Date.now() - thresholdMs;
 
-    const stmt = this.db.prepare(`
+    const result = await this.db.run(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
       WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-
-    const result = stmt.run(cutoff);
-    return result.changes;
+    `, [cutoff]);
+    return (result as { changes: number }).changes;
   }
 
   /**
    * Get count of pending messages for a session
    */
-  getPendingCount(sessionDbId: number): number {
-    const stmt = this.db.prepare(`
+  async getPendingCount(sessionDbId: number): Promise<number> {
+    const result = await this.db.get(`
       SELECT COUNT(*) as count FROM pending_messages
       WHERE session_db_id = ? AND status IN ('pending', 'processing')
-    `);
-    const result = stmt.get(sessionDbId) as { count: number };
+    `, [sessionDbId]) as { count: number };
     return result.count;
   }
 
@@ -401,60 +376,55 @@ export class PendingMessageStore {
    * Peek at pending message types for a session (for tier routing).
    * Returns list of { message_type, tool_name } without claiming.
    */
-  peekPendingTypes(sessionDbId: number): Array<{ message_type: string; tool_name: string | null }> {
-    const stmt = this.db.prepare(`
+  async peekPendingTypes(sessionDbId: number): Promise<Array<{ message_type: string; tool_name: string | null }>> {
+    return await this.db.all(`
       SELECT message_type, tool_name FROM pending_messages
       WHERE session_db_id = ? AND status IN ('pending', 'processing')
       ORDER BY id ASC
-    `);
-    return stmt.all(sessionDbId) as Array<{ message_type: string; tool_name: string | null }>;
+    `, [sessionDbId]) as Array<{ message_type: string; tool_name: string | null }>;
   }
 
   /**
    * Check if any session has pending work.
    * Excludes 'processing' messages stuck for >5 minutes (resets them to 'pending' as a side effect).
    */
-  hasAnyPendingWork(): boolean {
+  async hasAnyPendingWork(): Promise<boolean> {
     // Reset stuck 'processing' messages older than 5 minutes before checking
     const stuckCutoff = Date.now() - (5 * 60 * 1000);
-    const resetStmt = this.db.prepare(`
+    const resetResult = await this.db.run(`
       UPDATE pending_messages
       SET status = 'pending', started_processing_at_epoch = NULL
-      WHERE status = 'processing' AND started_processing_at_epoch < ?
-    `);
-    const resetResult = resetStmt.run(stuckCutoff);
+      WHERE status = \'processing\' AND started_processing_at_epoch < ?
+    `, [stuckCutoff]);
     if (resetResult.changes > 0) {
       logger.info('QUEUE', `STUCK_RESET | hasAnyPendingWork reset ${resetResult.changes} stuck processing message(s) older than 5 minutes`);
     }
 
-    const stmt = this.db.prepare(`
+    const result = await this.db.get(`
       SELECT COUNT(*) as count FROM pending_messages
       WHERE status IN ('pending', 'processing')
-    `);
-    const result = stmt.get() as { count: number };
+    `) as { count: number };
     return result.count > 0;
   }
 
   /**
    * Get all session IDs that have pending messages (for recovery on startup)
    */
-  getSessionsWithPendingMessages(): number[] {
-    const stmt = this.db.prepare(`
+  async getSessionsWithPendingMessages(): Promise<number[]> {
+    const results = await this.db.all(`
       SELECT DISTINCT session_db_id FROM pending_messages
       WHERE status IN ('pending', 'processing')
-    `);
-    const results = stmt.all() as { session_db_id: number }[];
+    `) as { session_db_id: number }[];
     return results.map(r => r.session_db_id);
   }
 
   /**
    * Get session info for a pending message (for recovery)
    */
-  getSessionInfoForMessage(messageId: number): { sessionDbId: number; contentSessionId: string } | null {
-    const stmt = this.db.prepare(`
+  async getSessionInfoForMessage(messageId: number): Promise<{ sessionDbId: number; contentSessionId: string } | null> {
+    const result = await this.db.get(`
       SELECT session_db_id, content_session_id FROM pending_messages WHERE id = ?
-    `);
-    const result = stmt.get(messageId) as { session_db_id: number; content_session_id: string } | undefined;
+    `, [messageId]) as { session_db_id: number; content_session_id: string } | undefined;
     return result ? { sessionDbId: result.session_db_id, contentSessionId: result.content_session_id } : null;
   }
 
@@ -462,13 +432,12 @@ export class PendingMessageStore {
    * Clear all failed messages from the queue
    * @returns Number of messages deleted
    */
-  clearFailed(): number {
-    const stmt = this.db.prepare(`
+  async clearFailed(): Promise<number> {
+    const result = await this.db.run(`
       DELETE FROM pending_messages
       WHERE status = 'failed'
     `);
-    const result = stmt.run();
-    return result.changes;
+    return (result as { changes: number }).changes;
   }
 
   /**
@@ -476,12 +445,11 @@ export class PendingMessageStore {
    * Keeps only processed messages (for history)
    * @returns Number of messages deleted
    */
-  clearAll(): number {
-    const stmt = this.db.prepare(`
+  async clearAll(): Promise<number> {
+    const result = await this.db.run(`
       DELETE FROM pending_messages
       WHERE status IN ('pending', 'processing', 'failed')
-    `);
-    const result = stmt.run();
+    `, []);
     return result.changes;
   }
 

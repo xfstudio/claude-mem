@@ -103,10 +103,10 @@ export class SDKAgent {
     logger.info('SDK', 'Starting SDK query', {
       sessionDbId: session.sessionDbId,
       contentSessionId: session.contentSessionId,
-      memorySessionId: session.memorySessionId,
+      memorySessionId: session.memorySessionId ?? undefined,
       hasRealMemorySessionId,
       shouldResume,
-      resume_parameter: shouldResume ? session.memorySessionId : '(none - fresh start)',
+      resume_parameter: shouldResume ? (session.memorySessionId || undefined) : '(none - fresh start)',
       lastPromptNumber: session.lastPromptNumber,
       authMethod
     });
@@ -137,7 +137,7 @@ export class SDKAgent {
         // instead of polluting user's actual project resume lists
         cwd: OBSERVER_SESSIONS_DIR,
         // Only resume if shouldResume is true (memorySessionId exists, not first prompt, not forceInit)
-        ...(shouldResume && { resume: session.memorySessionId }),
+        ...(shouldResume && { resume: session.memorySessionId || undefined }),
         disallowedTools,
         abortController: session.abortController,
         pathToClaudeCodeExecutable: claudePath,
@@ -166,12 +166,12 @@ export class SDKAgent {
           session.memorySessionId = message.session_id;
           // Persist to database IMMEDIATELY for FK constraint compliance
           // This must happen BEFORE any observations referencing this ID are stored
-          this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
+          await this.dbManager.getSessionStore().ensureMemorySessionIdRegistered(
             session.sessionDbId,
             message.session_id
           );
           // Verify the update by reading back from DB
-          const verification = this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
+          const verification = await this.dbManager.getSessionStore().getSessionById(session.sessionDbId);
           const dbVerified = verification?.memory_session_id === message.session_id;
           const logMessage = previousId
             ? `MEMORY_ID_CHANGED | sessionDbId=${session.sessionDbId} | from=${previousId} | to=${message.session_id} | dbVerified=${dbVerified}`

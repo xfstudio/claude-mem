@@ -7,7 +7,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import type { ObservationRecord } from '../../../types/database.js';
-import type { SessionStore } from '../../sqlite/SessionStore.js';
+import type { SessionStore } from '../../db/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
@@ -74,7 +74,7 @@ export class CorpusBuilder {
     if (filter.limit) hydrateOptions.limit = filter.limit;
 
     const observationRows = observationIds.length > 0
-      ? this.sessionStore.getObservationsByIds(observationIds, hydrateOptions)
+      ? await this.sessionStore.getObservationsByIds(observationIds, hydrateOptions)
       : [];
 
     logger.debug('WORKER', `Hydrated ${observationRows.length} observation records`);
