@@ -25,26 +25,29 @@ export class HybridDatabaseProvider implements IDatabaseProvider {
       const localResult = await this.sqlite.get<T>(sql, params);
       if (localResult) return localResult;
     } catch (err: any) {
-      logger.warn('DB', `SQLite get() failed: ${err.message}. Falling back to MySQL. Query: ${sql}`);
+      logger.warn('DB', `SQLite get() failed: ${err.message}. Falling back to MySQL.`);
     }
 
-    // Cache miss or local error. Execute bidirectional sync.
-    // This ensures both local and remote are up-to-date before retry.
+    // If SQL contains SQLite-specific syntax, don't attempt MySQL fallback
+    if (this.isSqliteOnlySql(sql)) {
+      return null;
+    }
+
+    // Cache miss — sync and retry SQLite
     await SyncService.syncBidirectional(this.sqlite, this.mysql);
 
-    // After syncing, try fetching from SQLite again as primary SSOT
     try {
       const recoveredResult = await this.sqlite.get<T>(sql, params);
-      if (recoveredResult) {
-        logger.debug('DB', `Hybrid Cache Miss Recovered via bidirectional sync for query: ${sql}`);
-        return recoveredResult;
-      }
-    } catch(e) {}
+      if (recoveredResult) return recoveredResult;
+    } catch (e) {}
 
-    // As an absolute final fallback, try fetching remotely
-    const remoteResult = await this.mysql.get<T>(sql, params);
-
-    return remoteResult;
+    // Final fallback: MySQL
+    try {
+      return await this.mysql.get<T>(sql, params);
+    } catch (err: any) {
+      logger.warn('DB', `MySQL get() fallback failed: ${err.message}`);
+      return null;
+    }
   }
 
   async all<T extends Record<string, any>>(sql: string, params?: any[]): Promise<T[]> {
@@ -52,26 +55,29 @@ export class HybridDatabaseProvider implements IDatabaseProvider {
       const localResults = await this.sqlite.all<T>(sql, params);
       if (localResults && localResults.length > 0) return localResults;
     } catch (err: any) {
-      logger.warn('DB', `SQLite all() failed: ${err.message}. Falling back to MySQL. Query: ${sql}`);
+      logger.warn('DB', `SQLite all() failed: ${err.message}. Falling back to MySQL.`);
     }
 
-    // Cache miss or empty list. Execute bidirectional sync.
-    // This ensures both local and remote are up-to-date before retry.
+    // If SQL contains SQLite-specific syntax, don't attempt MySQL fallback
+    if (this.isSqliteOnlySql(sql)) {
+      return [];
+    }
+
+    // Cache miss — sync and retry SQLite
     await SyncService.syncBidirectional(this.sqlite, this.mysql);
 
-    // try fetching from SQLite again
     try {
       const recoveredResults = await this.sqlite.all<T>(sql, params);
-      if (recoveredResults && recoveredResults.length > 0) {
-        logger.debug('DB', `Hybrid Cache Miss Recovered ${recoveredResults.length} rows via bidirectional sync for query: ${sql}`);
-        return recoveredResults;
-      }
-    } catch(e) {}
+      if (recoveredResults && recoveredResults.length > 0) return recoveredResults;
+    } catch (e) {}
 
-    // absolute final fallback
-    const remoteResults = await this.mysql.all<T>(sql, params);
-
-    return remoteResults;
+    // Final fallback: MySQL
+    try {
+      return await this.mysql.all<T>(sql, params);
+    } catch (err: any) {
+      logger.warn('DB', `MySQL all() fallback failed: ${err.message}`);
+      return [];
+    }
   }
 
   async run(sql: string, params?: any[]): Promise<{ changes: number; lastInsertRowid: number }> {
@@ -93,16 +99,28 @@ export class HybridDatabaseProvider implements IDatabaseProvider {
   }
 
   async transaction<T>(fn: (provider: IDatabaseProvider) => Promise<T>): Promise<T> {
-    // Use mysql.transaction() for correct single-connection MySQL transaction semantics.
+    // Create a transaction-safe proxy that prevents close() during transaction
+    const transactionProxy = new Proxy(this, {
+      get(target, prop) {
+        if (prop === 'close') {
+          return async () => {
+            logger.warn('DB', 'Attempted to close database during transaction - ignored');
+          };
+        }
+        return (target as any)[prop];
+      }
+    }) as IDatabaseProvider;
+
+    // Execute MySQL transaction first
     let mysqlResult!: T;
     await this.mysql.transaction(async () => {
-      mysqlResult = await fn(this);
+      mysqlResult = await fn(transactionProxy);
       return mysqlResult;
     });
 
     // Mirror on SQLite (best-effort local cache)
     try {
-      await this.sqlite.transaction(fn);
+      await this.sqlite.transaction(() => fn(transactionProxy));
     } catch (e) {
       logger.warn('DB', 'SQLite transaction failed after MySQL commit (will resync on next read)', e as Error);
     }
@@ -127,6 +145,23 @@ export class HybridDatabaseProvider implements IDatabaseProvider {
 
   async hasIndex(tableName: string, indexName: string): Promise<boolean> {
     return this.sqlite.hasIndex(tableName, indexName);
+  }
+
+  /**
+   * Detect SQLite-specific SQL that cannot be executed on MySQL.
+   * Used to prevent MySQL fallback errors on incompatible queries.
+   */
+  private isSqliteOnlySql(sql: string): boolean {
+    const upper = sql.toUpperCase();
+    return (
+      upper.includes('JSON_EACH(') ||
+      upper.includes('JSON_TREE(') ||
+      upper.includes('JSON_GROUP_ARRAY(') ||
+      /\bPRAGMA\b/.test(upper) ||
+      /\bINSERT\s+OR\s+(IGNORE|REPLACE)\b/.test(upper) ||
+      upper.includes('GLOB ') ||
+      upper.includes('TYPEOF(')
+    );
   }
 
   /**

@@ -41,6 +41,8 @@ export async function getDatabaseProvider(dbPath: string = DB_PATH): Promise<IDa
           waitForConnections: true,
           connectionLimit: 10,
           queueLimit: 0,
+          enableKeepAlive: true,
+          keepAliveInitialDelay: 10000,
         });
 
         // Initialize MySQL Database Schema exactly as SQLite would if it doesn't exist
