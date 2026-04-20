@@ -105,22 +105,21 @@ export class SyncService {
     }
 
     try {
-      await db.run('BEGIN');
-      for (const row of rows) {
-        // Convert any objects/arrays to strings or nulls
-        const values = keys.map(k => {
-          let val = row[k];
-          if (val === undefined) val = null;
-          return val;
-        });
-        await db.run(upsertSql, values);
-      }
-      await db.run('COMMIT');
+      // Use transaction() method to ensure connection isolation
+      await db.transaction(async (txDb) => {
+        for (const row of rows) {
+          // Convert any objects/arrays to strings or nulls
+          const values = keys.map(k => {
+            let val = row[k];
+            if (val === undefined) val = null;
+            return val;
+          });
+          await txDb.run(upsertSql, values);
+        }
+      });
     } catch (err: any) {
-      try {
-        await db.run('ROLLBACK');
-      } catch (rollbackErr) {}
       logger.error('DB', `Failed to insert rows into ${table}`, err);
+      throw err; // transaction() already handles rollback
     }
   }
 }
